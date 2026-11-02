@@ -50,21 +50,23 @@ pub fn orders(world: &World, seat: &str) -> Vec<Order> {
     let mut destination = if own.position.x < -100. { Vec3{x:-105.,y:120.,z:0.} }
         else if own.position.x > 100. { Vec3{x:105.,y:120.,z:0.} }
         else { Vec3{x:enemy.position.x, y:120.,z:0.} };
+    let expanded: Vec<_> = solid.iter().map(|b| expanded(*b,own.half_extent_metres+0.01)).collect();
     if exposed {
         let mut candidates = Vec::new();
         for s in world.structures.iter().filter(|s| s.integrity > 0) {
             let b = s.bounds; let r = own.half_extent_metres + 2.;
             for p in [Vec3{x:b.min.x-r,y:(b.min.y+b.max.y)/2.,z:0.}, Vec3{x:b.max.x+r,y:(b.min.y+b.max.y)/2.,z:0.}, Vec3{x:(b.min.x+b.max.x)/2.,y:b.min.y-r,z:0.}, Vec3{x:(b.min.x+b.max.x)/2.,y:b.max.y+r,z:0.}] {
-                if b.intersection(enemy.position,p).is_some() { candidates.push(p); }
+                let inside = world.playable_bounds.is_none_or(|a| p.x >= a.min.x+own.half_extent_metres && p.x <= a.max.x-own.half_extent_metres && p.y >= a.min.y+own.half_extent_metres && p.y <= a.max.y-own.half_extent_metres);
+                if inside && b.intersection(enemy.position,p).is_some() && clear(p,p,&expanded) { candidates.push(p); }
             }
         }
-        if let Some(p) = candidates.into_iter().min_by(|a,b| distance(own.position,*a).total_cmp(&distance(own.position,*b))) { destination = p; }
+        candidates.sort_by(|a,b| distance(own.position,*a).total_cmp(&distance(own.position,*b)));
+        if let Some(first_step) = candidates.into_iter().find_map(|p| waypoint(own.position,p,&expanded,world.playable_bounds)) { destination = first_step; }
     } else {
         let camera = Camera { position:own.position, forward:Vec3{x:own.heading_radians.cos(),y:own.heading_radians.sin(),z:0.}, horizontal_half_angle_radians:30_f64.to_radians(), max_range:1000. };
         if camera.sees_point(enemy.position, &solid) { destination = enemy.position; }
     }
     // Plan a complete route through visible expanded-obstacle corners.
-    let expanded: Vec<_> = solid.iter().map(|b| expanded(*b,own.half_extent_metres+0.01)).collect();
     if let Some(p) = waypoint(own.position,destination,&expanded,world.playable_bounds) { destination=p; }
     let desired=(destination.y-own.position.y).atan2(destination.x-own.position.x);
     let error=angle(desired-own.heading_radians);
@@ -96,6 +98,16 @@ mod tests {
     use std::collections::BTreeMap;
     fn vehicle(team:u8,x:f64) -> Vehicle {
         Vehicle { tank:Tank { fuel_ml:100, idle_fuel_ml_per_tick:0, engine_running:true, ammunition:BTreeMap::new(), chamber:Some("ap".into()), reload_ticks:1, loading:None, throttle:0, steering:0, drive_expires_at:None }, team, position:Vec3{x,y:0.,z:0.}, heading_radians:0., speed_metres_per_second:10., turn_radians_per_second:1., half_extent_metres:1., hit_points:1 }
+    }
+    #[test] fn chooses_reachable_cover_when_nearest_cover_is_blocked() {
+        let rect = |x1, y1, x2, y2| Bounds { min:Vec3{x:x1,y:y1,z:-2.}, max:Vec3{x:x2,y:y2,z:2.} };
+        let mut enemy = vehicle(1,50.);
+        enemy.heading_radians = std::f64::consts::PI;
+        let mut w = World::new(BTreeMap::from([("own".into(),vehicle(0,0.)),("enemy".into(),enemy)]),vec![rect(6.,3.,8.,5.)]);
+        w.structures.push(Structure { id:"blocked".into(), bounds:rect(10.,2.,14.,6.), integrity:3 });
+        w.structures.push(Structure { id:"reachable".into(), bounds:rect(25.,-6.,29.,-2.), integrity:3 });
+        let drive = orders(&w,"own").into_iter().find(|o| matches!(o,Order::Drive { .. })).unwrap();
+        assert!(matches!(drive, Order::Drive { steering:-1000, .. }), "{drive:?}");
     }
     #[test] fn fires_only_when_the_enemy_is_the_first_contact() {
         let mut w=World::new(BTreeMap::from([("own".into(),vehicle(0,0.)),("enemy".into(),vehicle(1,50.))]),vec![]);
