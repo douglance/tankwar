@@ -1,5 +1,5 @@
 use incurs::cli::Cli;
-use incurs::command::{CommandDef, TypedContext, TypedResult};
+use incurs::command::{CommandDef, McpAnnotations, McpCommandOptions, TypedContext, TypedResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tankwar_protocol::{Command, Order};
@@ -18,17 +18,65 @@ struct QueueArgs { /// Match mode, 1v1 or 2v2.
 struct ReadyArgs { /// Match ID returned by the queue.
     match_id: String }
 #[derive(Deserialize, incurs::Args)]
-struct FireArgs { match_id: String, seat_id: String, command_id: String }
+struct FireArgs {
+    /// Match containing the assigned tank.
+    match_id: String,
+    /// Seat assigned to the authenticated agent.
+    seat_id: String,
+    /// Unique command ID; reuse only when retrying the identical command.
+    command_id: String,
+}
 #[derive(Deserialize, incurs::Args)]
-struct EngineArgs { match_id: String, seat_id: String, command_id: String, running: bool }
+struct EngineArgs {
+    /// Match containing the assigned tank.
+    match_id: String,
+    /// Seat assigned to the authenticated agent.
+    seat_id: String,
+    /// Unique command ID; reuse only when retrying the identical command.
+    command_id: String,
+    /// True to start the engine; false to stop it.
+    running: bool,
+}
 #[derive(Deserialize, incurs::Args)]
-struct DriveArgs { match_id: String, seat_id: String, command_id: String, throttle: i16, steering: i16, ttl_ticks: u32 }
+struct DriveArgs {
+    /// Match containing the assigned tank.
+    match_id: String,
+    /// Seat assigned to the authenticated agent.
+    seat_id: String,
+    /// Unique command ID; reuse only when retrying the identical command.
+    command_id: String,
+    /// Signed throttle, from -1000 to 1000.
+    throttle: i16,
+    /// Signed steering, from -1000 to 1000.
+    steering: i16,
+    /// Ticks before controls return to neutral, from 1 to 200.
+    ttl_ticks: u32,
+}
 #[derive(Deserialize, incurs::Args)]
-struct LoadArgs { match_id: String, seat_id: String, command_id: String, ammunition: String }
+struct LoadArgs {
+    /// Match containing the assigned tank.
+    match_id: String,
+    /// Seat assigned to the authenticated agent.
+    seat_id: String,
+    /// Unique command ID; reuse only when retrying the identical command.
+    command_id: String,
+    /// Ammunition type available in the tank, such as ap.
+    ammunition: String,
+}
 #[derive(Deserialize, incurs::Options)]
 struct Options {}
 #[derive(JsonSchema, Serialize)]
 struct ServerOutput { status: String, body: String }
+
+fn read_only() -> McpCommandOptions {
+    McpCommandOptions { annotations: Some(McpAnnotations {
+        read_only_hint: Some(true),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(true),
+        open_world_hint: Some(true),
+        ..Default::default()
+    }), ..Default::default() }
+}
 
 fn server_url(base: &str, path: &str) -> Result<reqwest::Url, &'static str> {
     let mut url = reqwest::Url::parse(base).map_err(|_| "Invalid server URL")?;
@@ -124,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(_) => TypedResult::error("connection_error", "Could not reach the Tankwar server"),
             }
         },
-    ).description("Check the Tankwar server status").done();
+    ).description("Check the Tankwar server status").mcp(read_only()).done();
     let order = CommandDef::typed::<OrderArgs, Options, (), ServerOutput, _, _>(
         "order", |ctx: TypedContext<OrderArgs, Options, ()>| async move { send_order(&ctx.args.command).await },
     ).description("Submit a command to a match").done();
@@ -168,13 +216,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !valid_match_id(&ctx.args.match_id) { return TypedResult::error("invalid_match", "Match ID contains invalid characters"); }
             send_authenticated(&format!("/v1/matches/{}/observe", ctx.args.match_id), serde_json::json!({})).await
         },
-    ).description("Inspect your assigned tank's instruments").done();
+    ).description("Inspect your assigned tank's instruments").mcp(read_only()).done();
     let look = CommandDef::typed::<ReadyArgs, Options, (), ServerOutput, _, _>(
         "look", |ctx: TypedContext<ReadyArgs, Options, ()>| async move {
             if !valid_match_id(&ctx.args.match_id) { return TypedResult::error("invalid_match", "Match ID contains invalid characters"); }
             send_authenticated(&format!("/v1/matches/{}/look", ctx.args.match_id), serde_json::json!({})).await
         },
-    ).description("Look through the approximate forward sight").done();
+    ).description("Look through the approximate forward sight").mcp(read_only()).done();
     Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("leave", leave).command("ready", ready).command("observe", observe).command("look", look).command("order", order).command("fire", fire).command("engine", engine).command("drive", drive).command("load", load).serve().await
 }
 
