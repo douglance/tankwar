@@ -132,8 +132,9 @@ impl World {
         for seat in seats {
             let others: Vec<_> = self.vehicles.iter().filter(|(id,_)| **id != seat).map(|(_,v)| v.bounds()).collect();
             let vehicle = self.vehicles.get_mut(&seat).expect("seat exists");
+            if vehicle.hit_points == 0 { continue; }
             vehicle.tank.step(self.tick);
-            if vehicle.hit_points == 0 || !vehicle.tank.engine_running { continue; }
+            if !vehicle.tank.engine_running { continue; }
             vehicle.heading_radians += vehicle.turn_radians_per_second * (vehicle.tank.steering as f64 / 1000.) / 20.;
             let distance = vehicle.speed_metres_per_second * (vehicle.tank.throttle as f64 / 1000.) / 20.;
             let start = vehicle.position;
@@ -175,7 +176,12 @@ impl World {
                 trace.hit_kind = "vehicle".into();
                 trace.target = Some(seat.clone());
                 let v = self.vehicles.get_mut(seat).expect("target exists"); v.hit_points = v.hit_points.saturating_sub(1);
-                if v.hit_points == 0 { events.push(WorldEvent::Destroyed { seat: seat.clone() }); }
+                if v.hit_points == 0 {
+                    v.tank.engine_running = false;
+                    v.tank.throttle = 0;
+                    v.tank.steering = 0;
+                    events.push(WorldEvent::Destroyed { seat: seat.clone() });
+                }
             }
             events.push(WorldEvent::Impact { target });
         }
@@ -191,6 +197,18 @@ mod tests {
     }
     fn world(obstacles:Vec<Bounds>) -> World {
         let mut w=World::new(BTreeMap::from([("a".into(),vehicle(0,0.)),("b".into(),vehicle(1,10.))]),obstacles); w.state=MatchState::Running; w
+    }
+    #[test] fn destroyed_vehicle_does_not_consume_fuel_or_finish_reloading() {
+        let mut w = world(vec![]);
+        let wreck = w.vehicles.get_mut("a").unwrap();
+        wreck.hit_points = 0;
+        wreck.tank.fuel_ml = 50;
+        wreck.tank.idle_fuel_ml_per_tick = 5;
+        wreck.tank.loading = Some(("ap".into(), 2));
+        w.step();
+        let wreck = &w.vehicles["a"].tank;
+        assert_eq!(wreck.fuel_ml, 50);
+        assert_eq!(wreck.loading, Some(("ap".into(), 2)));
     }
     #[test] fn spectator_snapshot_reports_authoritative_pose_and_resources() {
         let mut w = world(vec![]);
@@ -221,6 +239,7 @@ mod tests {
     #[test] fn firing_is_server_resolved_and_ends_match() {
         let mut w=world(vec![]); w.enqueue(Pending{id:"fire".into(),seat:"a".into(),order:Order::Fire}).unwrap();
         let e=w.step(); assert!(e.contains(&WorldEvent::Destroyed{seat:"b".into()}));
+        assert!(!w.vehicles["b"].tank.engine_running);
         assert!(e.contains(&WorldEvent::Finished{winner:Some(0)})); assert_eq!(w.vehicles["a"].tank.chamber,None);
     }
     #[test] fn simultaneous_opposing_shots_produce_draw_in_either_order() {
