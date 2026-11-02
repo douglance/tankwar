@@ -1,6 +1,25 @@
 use tankwar_protocol::{Command, MatchState, Order, PROTOCOL_VERSION, MATCH_TICKS};
 use tankwar_server::{ledger::Decision, match_runtime::DurableMatch, matchmaking::Queue};
-use tankwar_sim::competition::{Mode, Ratings};
+use tankwar_sim::competition::{Mode, Outcome, Ratings};
+
+#[test]
+fn named_season_keeps_an_agents_mode_ladders_separate() {
+    let mut ratings = Ratings::for_season("season-1").unwrap();
+    ratings.apply("one-match", Mode::OneOnOne, &["alice".into()], &["bob".into()], Outcome::FirstWins).unwrap();
+    ratings.apply("two-match", Mode::TwoOnTwo, &["alice".into(), "ally".into()], &["carol".into(), "dave".into()], Outcome::SecondWins).unwrap();
+
+    let stored = serde_json::to_value(&ratings).unwrap();
+    assert_eq!(stored["season"], "season-1");
+    assert_eq!(stored["ratings"]["1:alice"], 1516.0);
+    assert_eq!(stored["ratings"]["2:alice"], 1484.0);
+    let restored: Ratings = serde_json::from_value(stored).unwrap();
+    assert_eq!(restored.season(), "season-1");
+    for (mode, label, expected) in [(Mode::OneOnOne, "1v1", 1516.0), (Mode::TwoOnTwo, "2v2", 1484.0)] {
+        let entry = restored.leaderboard(mode).into_iter().find(|entry| entry.agent_id == "alice").unwrap();
+        assert_eq!((entry.rating, entry.games, entry.provisional), (expected, 1, true));
+        println!("stored season={} mode={label} agent={} rating={} games={} provisional={}", restored.season(), entry.agent_id, entry.rating, entry.games, entry.provisional);
+    }
+}
 
 fn assigned(queue: &mut Queue, mode: Mode, agents: &[&str]) -> DurableMatch {
     for agent in &agents[..agents.len()-1] {
