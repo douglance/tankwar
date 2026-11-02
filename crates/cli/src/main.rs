@@ -133,7 +133,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_authenticated(&format!("/v1/matches/{}/observe", ctx.args.match_id), serde_json::json!({})).await
         },
     ).description("Inspect your assigned tank's instruments").done();
-    Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("leave", leave).command("ready", ready).command("observe", observe).command("order", order).serve().await
+    let look = CommandDef::typed::<ReadyArgs, Options, (), ServerOutput, _, _>(
+        "look", |ctx: TypedContext<ReadyArgs, Options, ()>| async move {
+            if !valid_match_id(&ctx.args.match_id) { return TypedResult::error("invalid_match", "Match ID contains invalid characters"); }
+            send_authenticated(&format!("/v1/matches/{}/look", ctx.args.match_id), serde_json::json!({})).await
+        },
+    ).description("Look through the approximate forward sight").done();
+    Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("leave", leave).command("ready", ready).command("observe", observe).command("look", look).command("order", order).serve().await
 }
 
 #[cfg(test)]

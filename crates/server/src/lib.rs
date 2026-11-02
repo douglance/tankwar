@@ -47,14 +47,14 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return forward(&env, "MATCHES", match_id, "/replay", serde_json::json!({"tick":tick})).await;
     }
     let is_queue = matches!(path.as_str(), "/v1/queue" | "/v1/queue/leave");
-    let is_match = parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && matches!(parts[4], "commands" | "ready" | "observe");
+    let is_match = parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && matches!(parts[4], "commands" | "ready" | "observe" | "look");
     if req.method() != Method::Post || !(is_queue || is_match) {
         if !path.starts_with("/v1/") && matches!(req.method(), Method::Get | Method::Head) {
             if let Ok(assets) = env.service("ASSETS") { return assets.fetch_request(req).await; }
         }
         return Response::error("not found", 404);
     }
-    let scope = if is_queue { "queue:write" } else if parts[4] == "observe" { "match:observe" } else { "match:command" };
+    let scope = if is_queue { "queue:write" } else if matches!(parts[4], "observe" | "look") { "match:observe" } else { "match:command" };
     let (Ok(issuer), Ok(audience), Ok(jwks)) = (env.var("AUTH_ISSUER"), env.var("AUTH_AUDIENCE"), env.var("AUTH_JWKS")) else {
         return Response::error("authentication is not configured", 503);
     };
@@ -87,8 +87,8 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
         return Response::error("invalid match id", 400);
     }
-    if parts[4] == "observe" {
-        return forward(&env, "MATCHES", match_id, "/observe", serde_json::json!({"agent_id": agent_id})).await;
+    if matches!(parts[4], "observe" | "look") {
+        return forward(&env, "MATCHES", match_id, &format!("/{}", parts[4]), serde_json::json!({"agent_id": agent_id})).await;
     }
     if parts[4] == "ready" {
         return forward(&env, "MATCHES", match_id, "/ready", serde_json::json!({"agent_id": agent_id})).await;
@@ -208,15 +208,18 @@ impl DurableObject for MatchActor {
             let frame: Option<tankwar_protocol::Snapshot> = self.state.storage().get(&format!("replay/{:05}", input.tick)).await?;
             return match frame { Some(frame) => Response::from_json(&frame), None => Response::error("replay frame unavailable", 404) };
         }
-        if req.path() == "/observe" {
+        if matches!(req.path().as_str(), "/observe" | "/look") {
             #[derive(serde::Deserialize)] struct Observe { agent_id: String }
             let input: Observe = req.json().await?;
             let _guard = self.lock.lock().await;
             let Some(game): Option<match_runtime::DurableMatch> = self.state.storage().get("match").await? else { return Response::error("match not found", 404); };
-            return match game.observe_self(&input.agent_id) {
-                Ok(snapshot) => Response::from_json(&snapshot),
-                Err(reason) => Response::error(reason, 403),
-            };
+            if req.path() == "/look" {
+                return match game.look(&input.agent_id) {
+                    Ok(report) => Response::from_json(&report),
+                    Err(reason) => Response::error(reason, 403),
+                };
+            }
+            return match game.observe_self(&input.agent_id) { Ok(snapshot) => Response::from_json(&snapshot), Err(reason) => Response::error(reason, 403) };
         }
         if req.path() == "/ready" {
             if let Err(reason) = ranked_admission() { return Response::error(reason, 503); }

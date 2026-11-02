@@ -127,6 +127,10 @@ impl DurableMatch {
         tank.x_m = None; tank.y_m = None; tank.heading_rad = None; tank.team = None;
         Ok(snapshot)
     }
+    pub fn look(&self, agent: &str) -> Result<tankwar_protocol::SightReport, &'static str> {
+        let seat = self.ledger.seats.iter().find(|seat| seat.agent_id == agent).ok_or("unauthorized_seat")?;
+        self.world.look(&self.ledger.match_id, &seat.seat_id)
+    }
     /// Apply a finished match to a season's rating state; the owner must persist it atomically.
     pub fn rate_finished(&self, ratings: &mut tankwar_sim::competition::Ratings, _mode: tankwar_sim::competition::Mode) -> Result<Vec<tankwar_sim::competition::RatingChange>, &'static str> {
         let (mode, first, second, outcome) = self.result()?;
@@ -178,6 +182,10 @@ mod tests {
         assert_eq!(snapshot.tanks[0].x_m, None);
         assert_eq!(snapshot.tanks[0].heading_rad, None);
         assert_eq!(game.observe_self("outsider"), Err("unauthorized_seat"));
+        assert_eq!(game.look("outsider"), Err("unauthorized_seat"));
+        let view = game.look("agent").unwrap();
+        assert_eq!(view.contacts.len(), 1);
+        assert!(!serde_json::to_string(&view).unwrap().contains("other"));
     }
     #[test] fn assignment_creates_unique_opposing_ready_seats() {
         use tankwar_sim::competition::Mode;

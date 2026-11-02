@@ -4,6 +4,29 @@ use std::process::Command;
 use std::thread;
 
 #[test]
+fn look_forwards_to_authenticated_match_sight() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut bytes = [0; 4096];
+        let count = socket.read(&mut bytes).unwrap();
+        let request = String::from_utf8_lossy(&bytes[..count]);
+        assert!(request.starts_with("POST /v1/matches/match-1/look HTTP/1.1\r\n"));
+        assert!(request.to_ascii_lowercase().contains("authorization: bearer test-secret"));
+        socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_tankwar"))
+        .env("TANKWAR_URL", format!("http://{address}"))
+        .env("TANKWAR_ACCESS_TOKEN", "test-secret")
+        .env_remove("TANKWAR_ACCESS_CLIENT_ID").env_remove("TANKWAR_ACCESS_CLIENT_SECRET")
+        .args(["look", "match-1"]).output().unwrap();
+    server.join().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn cli_forwards_command_with_bearer_and_reports_acceptance() {
     verify_forwarding(false);
 }

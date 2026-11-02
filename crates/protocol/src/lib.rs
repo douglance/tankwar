@@ -69,3 +69,18 @@ pub struct Snapshot {
     pub sequence: u64,
     pub tanks: Vec<TankSnapshot>,
 }
+
+/// Approximate, hull-fixed forward sight report; no hidden vehicle identifiers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SightReport {
+    pub protocol_version: u32,
+    pub match_id: String,
+    pub tick: u64,
+    pub station: String,
+    pub contacts: Vec<SightContact>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SightContact {
+    pub bearing_degrees: i32,
+    pub approximate_range_metres: u32,
+}

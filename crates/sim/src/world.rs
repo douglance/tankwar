@@ -44,6 +44,29 @@ pub struct World {
 }
 impl World {
     pub fn new(vehicles: BTreeMap<String, Vehicle>, obstacles: Vec<Bounds>) -> Self { Self { state: MatchState::Ready, tick: 0, vehicles, obstacles, pending: VecDeque::new() } }
+    /// Placeholder hull-fixed sight. Cone, range and precision are unsourced approximations.
+    pub fn look(&self, match_id: &str, seat: &str) -> Result<tankwar_protocol::SightReport, &'static str> {
+        use tankwar_protocol::{SightContact, SightReport, PROTOCOL_VERSION};
+        let observer = self.vehicles.get(seat).ok_or("unknown_seat")?;
+        if observer.hit_points == 0 { return Err("vehicle_destroyed"); }
+        let camera = crate::geometry::Camera { position: observer.position,
+            forward: Vec3 { x: observer.heading_radians.cos(), y: observer.heading_radians.sin(), z: 0. },
+            horizontal_half_angle_radians: 30_f64.to_radians(), max_range: 1000. };
+        let mut contacts = Vec::new();
+        for (id, target) in &self.vehicles {
+            if id == seat { continue; }
+            let mut occluders = self.obstacles.clone();
+            occluders.extend(self.vehicles.iter().filter(|(other, _)| *other != seat && *other != id).map(|(_, v)| v.bounds()));
+            if !camera.sees_point(target.position, &occluders) { continue; }
+            let dx = target.position.x - observer.position.x;
+            let dy = target.position.y - observer.position.y;
+            let bearing = (dy.atan2(dx) - observer.heading_radians + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+            contacts.push(SightContact { bearing_degrees: (bearing.to_degrees() / 5.).round() as i32 * 5,
+                approximate_range_metres: ((dx.hypot(dy) / 50.).round() as u32).max(1).saturating_mul(50) });
+        }
+        contacts.sort_by_key(|c| (c.bearing_degrees, c.approximate_range_metres));
+        Ok(SightReport { protocol_version: PROTOCOL_VERSION, match_id: match_id.into(), tick: self.tick, station: "prototype_forward_sight".into(), contacts })
+    }
     /// Omniscient spectator projection. This must never be returned as an agent view.
     pub fn spectator_snapshot(&self, match_id: &str, sequence: u64) -> tankwar_protocol::Snapshot {
         use tankwar_protocol::{Snapshot, TankSnapshot, PROTOCOL_VERSION};
@@ -141,6 +164,24 @@ mod tests {
         assert_eq!(s.sequence, 9); assert_eq!(s.tanks[0].seat_id, "a");
         assert_eq!(s.tanks[0].x_m, Some(0.0)); assert_eq!(s.tanks[0].y_m, Some(12.0));
         assert_eq!(s.tanks[0].heading_rad, Some(0.0)); assert_eq!(s.tanks[0].knocked_out, Some(false));
+    }
+    #[test] fn sight_respects_cone_range_cover_and_other_vehicles() {
+        let mut w = world(vec![]);
+        let report = w.look("match", "a").unwrap();
+        assert_eq!(report.contacts, vec![tankwar_protocol::SightContact { bearing_degrees: 0, approximate_range_metres: 50 }]);
+        w.vehicles.get_mut("b").unwrap().position.x = 1001.;
+        assert!(w.look("match", "a").unwrap().contacts.is_empty());
+        w.vehicles.get_mut("b").unwrap().position = Vec3 { x: -10., y: 0., z: 0. };
+        assert!(w.look("match", "a").unwrap().contacts.is_empty());
+        w.vehicles.get_mut("b").unwrap().position.x = 100.;
+        w.obstacles.push(Bounds { min: Vec3{x:40.,y:-2.,z:-2.}, max: Vec3{x:41.,y:2.,z:2.} });
+        assert!(w.look("match", "a").unwrap().contacts.is_empty());
+        w.obstacles.clear();
+        w.vehicles.insert("c".into(), vehicle(1, 50.));
+        assert_eq!(w.look("match", "a").unwrap().contacts.len(), 1);
+        assert!(w.look("match", "unknown").is_err());
+        w.vehicles.get_mut("a").unwrap().hit_points = 0;
+        assert_eq!(w.look("match", "a"), Err("vehicle_destroyed"));
     }
     #[test] fn firing_is_server_resolved_and_ends_match() {
         let mut w=world(vec![]); w.enqueue(Pending{id:"fire".into(),seat:"a".into(),order:Order::Fire}).unwrap();
