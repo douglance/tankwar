@@ -204,4 +204,18 @@ mod tests {
         let mut w=world(vec![]); w.enqueue(Pending{id:"drive".into(),seat:"a".into(),order:Order::Drive{throttle:1000,steering:0,ttl_ticks:1}}).unwrap();
         w.step(); assert_eq!(w.vehicles["a"].position.x,0.5); w.step(); assert_eq!(w.vehicles["a"].position.x,0.5);
     }
+    #[test] fn moving_out_of_the_line_of_fire_changes_the_outcome() {
+        let mut still = world(vec![]);
+        still.enqueue(Pending{id:"shot".into(),seat:"a".into(),order:Order::Fire}).unwrap();
+        assert!(still.step().contains(&WorldEvent::Destroyed { seat:"b".into() }));
+
+        let mut moving = world(vec![]);
+        moving.vehicles.get_mut("b").unwrap().heading_radians = std::f64::consts::FRAC_PI_2;
+        moving.enqueue(Pending{id:"evade".into(),seat:"b".into(),order:Order::Drive{throttle:1000,steering:0,ttl_ticks:3}}).unwrap();
+        for _ in 0..3 { moving.step(); }
+        assert_eq!(moving.vehicles["b"].position.y, 1.5);
+        moving.enqueue(Pending{id:"shot".into(),seat:"a".into(),order:Order::Fire}).unwrap();
+        assert!(!moving.step().contains(&WorldEvent::Destroyed { seat:"b".into() }));
+        assert_eq!(moving.state, MatchState::Running);
+    }
 }

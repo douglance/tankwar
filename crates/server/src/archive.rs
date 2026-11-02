@@ -38,6 +38,13 @@ pub fn complete_commands(events: &[Event], version: u64) -> bool {
     events.len() as u64 == version && events.iter().enumerate().all(|(index, event)| event.sequence == index as u64 + 1)
 }
 
+/// Durable Object multi-get permits at most 128 keys per request.
+pub fn key_batches(prefix: &str, count: u64) -> impl Iterator<Item = Vec<String>> + '_ {
+    (1..=count).step_by(128).map(move |start| {
+        (start..=start.saturating_add(127).min(count)).map(|sequence| format!("{prefix}/{sequence:020}")).collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +60,13 @@ mod tests {
         assert!(complete_commands(&[event(1), event(2)], 2));
         assert!(!complete_commands(&[event(1)], 2));
         assert!(!complete_commands(&[event(1), event(1)], 2));
+    }
+    #[test]
+    fn key_batches_cover_history_in_order() {
+        let batches: Vec<_> = key_batches("command", 257).collect();
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), vec![128, 128, 1]);
+        assert_eq!(batches[0][0], "command/00000000000000000001");
+        assert_eq!(batches[2][0], "command/00000000000000000257");
+        assert_eq!(key_batches("command", 0).count(), 0);
     }
 }

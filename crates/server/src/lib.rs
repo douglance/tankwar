@@ -155,6 +155,20 @@ async fn persist_match_and_frames(storage: &Storage, game: &mut match_runtime::D
     }).await
 }
 
+async fn read_history<T: serde::de::DeserializeOwned>(storage: &Storage, prefix: &str, count: u64) -> Result<Vec<T>> {
+    let mut events = Vec::new();
+    for keys in archive::key_batches(prefix, count) {
+        let values = storage.get_multiple(keys.clone()).await?;
+        for key in keys {
+            let key = worker::wasm_bindgen::JsValue::from_str(&key);
+            if values.has(&key) {
+                events.push(serde_wasm_bindgen::from_value(values.get(&key)).map_err(|e| Error::RustError(e.to_string()))?);
+            }
+        }
+    }
+    Ok(events)
+}
+
 impl MatchActor {
     fn start_loop(&self) {
         if self.loop_active.replace(true) { return; }
@@ -207,18 +221,12 @@ impl DurableObject for MatchActor {
             let _guard = self.lock.lock().await;
             let storage = self.state.storage();
             let Some(game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::error("match not found", 404); };
-            let mut commands = Vec::new();
-            for sequence in 1..=game.ledger.version {
-                if let Some(event) = storage.get::<tankwar_protocol::Event>(&format!("command/{sequence:020}")).await? { commands.push(event); }
-            }
+            let mut commands = read_history::<tankwar_protocol::Event>(&storage, "command", game.ledger.version).await?;
             commands.extend(game.ledger.events.clone());
             commands.sort_by_key(|event| event.sequence);
             if !archive::complete_commands(&commands, game.ledger.version) { return Response::error("command archive incomplete", 500); }
-            let mut world_events = Vec::new();
-            for sequence in 1..=game.archived_world_events {
-                let Some(event) = storage.get::<match_runtime::RecordedWorldEvent>(&format!("world-event/{sequence:020}")).await? else { return Response::error("event archive incomplete", 500); };
-                world_events.push(event);
-            }
+            let mut world_events = read_history::<match_runtime::RecordedWorldEvent>(&storage, "world-event", game.archived_world_events).await?;
+            if world_events.len() as u64 != game.archived_world_events { return Response::error("event archive incomplete", 500); }
             world_events.extend(game.world_events.clone());
             return Response::from_json(&serde_json::json!({
                 "snapshot": game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version),
