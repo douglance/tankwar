@@ -6,7 +6,7 @@ Status: incomplete, version 1 draft. The live service does not yet accept comman
 
 JSON fields: `protocol_version` (integer, currently 1), `id` (client-generated string), `match_id` (string), `seat_id` (string), `expected_version` (optional integer), and `order` (object with `kind`). Orders currently defined: `engine` (`running`: boolean), `drive` (`throttle`, `steering`: integers from -1000 to 1000; `ttl_ticks`: positive integer), `load` (`ammunition`: string), and `fire` (no additional fields). The command set will expand as the crew simulation is implemented.
 
-A command ID is scoped to a match. The authority must durably record an accepted command before responding, return its original result on an identical retry, and reject reuse of an ID with a different payload. An accepted order is not a promise that the crew completes it.
+A command ID is scoped to a match. The authority must durably record an accepted command before responding, return its original result on an identical retry, and reject reuse of an ID with a different payload. An accepted order is not a promise that the crew completes it. The prototype accepts at most four new commands per seat per simulation tick; identical retries do not consume that limit.
 
 ## Event
 

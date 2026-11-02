@@ -15,6 +15,7 @@ pub struct Ledger {
     pub seats: Vec<Seat>,
     pub events: Vec<Event>,
     accepted: BTreeMap<String, Command>,
+    #[serde(default)] per_seat_tick: BTreeMap<String, (u64, u32)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub enum Decision { Accept(Event), Duplicate(Event), Reject(&'static str) }
 
 impl Ledger {
     pub fn new(match_id: String, seats: Vec<Seat>) -> Self {
-        Self { match_id, state: MatchState::Assigned, tick: 0, version: 0, seats, events: Vec::new(), accepted: BTreeMap::new() }
+        Self { match_id, state: MatchState::Assigned, tick: 0, version: 0, seats, events: Vec::new(), accepted: BTreeMap::new(), per_seat_tick: BTreeMap::new() }
     }
     /// This changes only an in-memory copy; the caller must persist it atomically.
     pub fn decide(&mut self, agent_id: &str, command: Command) -> Decision {
@@ -40,6 +41,9 @@ impl Ledger {
         if let Order::Drive { throttle, steering, ttl_ticks } = &command.order {
             if *ttl_ticks == 0 || *ttl_ticks > 200 || !(-1000..=1000).contains(throttle) || !(-1000..=1000).contains(steering) { return Decision::Reject("invalid_drive"); }
         }
+        let used = self.per_seat_tick.get(&command.seat_id).filter(|(tick, _)| *tick == self.tick).map(|(_, count)| *count).unwrap_or(0);
+        if used >= 4 { return Decision::Reject("rate_limited"); }
+        self.per_seat_tick.insert(command.seat_id.clone(), (self.tick, used + 1));
         self.version += 1;
         let event = Event { sequence: self.version, tick: self.tick, event: EventKind::Accepted { command: command.clone() } };
         self.accepted.insert(key, command);
@@ -60,6 +64,17 @@ mod tests {
         let mut changed = c; changed.order = Order::Engine { running: true };
         assert_eq!(l.decide("agent", changed), Decision::Reject("command_id_conflict"));
         assert_eq!(l.events.len(), 1);
+    }
+    #[test] fn command_rate_limit_is_per_tick_and_retries_remain_idempotent() {
+        let mut l = ledger();
+        let mut first = command();
+        let accepted = match l.decide("agent", first.clone()) { Decision::Accept(e) => e, _ => panic!() };
+        for id in ["two", "three", "four"] { let mut next=first.clone(); next.id=id.into(); assert!(matches!(l.decide("agent",next),Decision::Accept(_))); }
+        assert_eq!(l.decide("agent", first.clone()), Decision::Duplicate(accepted));
+        first.id="five".into();
+        assert_eq!(l.decide("agent", first.clone()), Decision::Reject("rate_limited"));
+        l.tick += 1;
+        assert!(matches!(l.decide("agent", first), Decision::Accept(_)));
     }
     #[test] fn same_id_on_another_seat_is_a_conflict() {
         let mut l = ledger();
