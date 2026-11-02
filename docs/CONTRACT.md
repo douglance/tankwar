@@ -12,6 +12,8 @@ A command ID is scoped to a match. The authority must durably record an accepted
 
 An event has integer `sequence` and `tick`, plus an `event` object with `kind`. Defined kinds are `accepted` (full command), `rejected` (command ID and reason), `started` and `completed` (command ID), `interrupted` (command ID and reason), `expired` (command ID), `state_changed` (state), and `match_drawn`. Sequence numbers are ordered within one match.
 
+The spectator feed also exposes `world_events` as `{ "tick": integer, "event": object }` records. The event object uses externally tagged JSON: `OrderApplied` (`id`), `OrderFailed` (`id`, `reason`), `Shot` (`seat`, `round`), `Impact` (`target`, a seat or null), `Destroyed` (`seat`), `Finished` (`winner`, a team number or null for a draw), `Aborted` (`reason`), `Cancelled` (`reason`), or `Recovered` (`paused_millis`). For example, `{ "tick": 42, "event": { "Shot": { "seat": "a", "round": "AP" } } }`. These world records have no independent sequence number, so a tick alone is not a unique replay cursor.
+
 ## Snapshot
 
 A snapshot has `protocol_version`, `match_id`, `state`, `tick`, `sequence`, and `tanks`. Each tank has `seat_id`, `fuel_millilitres`, `engine_running`, `ammunition` (round type/count pairs), and `loaded_round`. These are spectator-oriented fields; an agent-facing projection must enforce crew visibility and must not expose enemy internals.
