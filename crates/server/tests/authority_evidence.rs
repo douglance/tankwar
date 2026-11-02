@@ -54,6 +54,47 @@ fn spectator_copy_cannot_change_authoritative_state_or_issue_orders() {
 }
 
 #[test]
+fn seat_sight_and_snapshot_are_server_owned() {
+    use tankwar_protocol::MatchState;
+    use tankwar_sim::geometry::Vec3;
+
+    let mut g = running();
+    g.world.structures.clear();
+    g.world.obstacles.clear();
+    for (seat, x) in [("west-0", 0.), ("east-0", 100.)] {
+        let tank = g.world.vehicles.get_mut(seat).unwrap();
+        tank.position = Vec3 { x, y: 0., z: 0. };
+        tank.heading_radians = 0.;
+    }
+    assert_eq!(g.look("alice").unwrap().contacts.len(), 1);
+    assert!(g.look("bob").unwrap().contacts.is_empty());
+    assert_eq!(g.look("spectator"), Err("unauthorized_seat"));
+    for (agent, seat) in [("alice", "west-0"), ("bob", "east-0")] {
+        let view = g.observe_self(agent).unwrap();
+        assert_eq!(view.tanks.len(), 1);
+        assert_eq!(view.tanks[0].seat_id, seat);
+        assert_eq!((view.tanks[0].x_m, view.tanks[0].y_m, view.tanks[0].heading_rad, view.tanks[0].team), (None, None, None, None));
+        assert!(view.structures.is_empty());
+    }
+    assert_eq!(g.observe_self("spectator"), Err("unauthorized_seat"));
+    println!("server sight: alice sees 1 contact; bob sees 0; spectator denied; each agent receives only its own redacted tank");
+
+    let mut display = g.world.spectator_snapshot("authority", 0);
+    display.tick = 18000;
+    display.state = MatchState::Finished;
+    display.tanks.iter_mut().find(|t| t.seat_id == "east-0").unwrap().knocked_out = Some(true);
+    assert_eq!(g.world.tick, 0);
+    assert_eq!(g.world.state, MatchState::Running);
+    assert_eq!(g.world.vehicles["east-0"].hit_points, 1);
+    assert!(g.finished.is_none());
+    assert_eq!(g.look("alice").unwrap().contacts.len(), 1);
+    assert!(g.look("bob").unwrap().contacts.is_empty());
+    g.advance(1050).unwrap();
+    assert_eq!(g.world.tick, 1);
+    println!("altered spectator copy: authoritative tick=1, enemy hp=1, match running, seat visibility unchanged");
+}
+
+#[test]
 fn combat_outcome_is_decided_by_server_not_spectator_or_wrong_seat() {
     use tankwar_protocol::MatchState;
     use tankwar_sim::{competition::Outcome, geometry::{Bounds, Vec3}, world::WorldEvent};
