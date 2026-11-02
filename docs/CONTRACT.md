@@ -18,7 +18,7 @@ The spectator feed also exposes `world_events` as `{ "tick": integer, "event": o
 
 A snapshot has `protocol_version`, `match_id`, `state`, `tick`, `sequence`, and `tanks`. Each tank has `seat_id`, `fuel_millilitres`, `engine_running`, `ammunition` (round type/count pairs), and `loaded_round`. These are spectator-oriented fields; an agent-facing projection must enforce crew visibility and must not expose enemy internals.
 
-States: `queued`, `assigned`, `ready`, `running`, `finished`, `cancelled`, `aborted`. A simulation tick is 50 ms. First scenario timeout is 18,000 ticks and a draw; there is no depot. Fuel consumption currently uses explicit unsourced approximation parameters; historical accuracy is not established.
+States: `queued`, `assigned`, `ready`, `running`, `finished`, `cancelled`, `aborted`. A simulation tick is 50 ms. First scenario timeout is 18,000 ticks and a draw; there is no depot. Actor recovery catches up from the persisted tick deadline; a gap exceeding 20 ticks aborts the match rather than pausing it or awarding Elo. Fuel consumption currently uses explicit unsourced approximation parameters; historical accuracy is not established.
 
 ## Draft command transport
 

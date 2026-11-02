@@ -279,14 +279,11 @@ impl DurableObject for MatchActor {
         }
         if game.world.state == tankwar_protocol::MatchState::Running {
             if !self.loop_active.get() {
-                let now = Date::now().as_millis();
-                let paused_millis = game.clock.as_ref().map(|clock| now.saturating_sub(clock.next_tick_ms().saturating_sub(50))).unwrap_or(0);
-                game.clock = Some(tankwar_sim::clock::Clock::start(now).map_err(|e| Error::RustError(e.into()))?);
-                game.world_events.push(match_runtime::RecordedWorldEvent { tick: game.world.tick, event: tankwar_sim::world::WorldEvent::Recovered { paused_millis } });
-                storage.put("match", &game).await?;
-                self.start_loop();
+                let frames = game.recover(Date::now().as_millis());
+                persist_match_and_frames(&storage, game.clone(), frames).await?;
+                if game.world.state == tankwar_protocol::MatchState::Running { self.start_loop(); }
             }
-            storage.set_alarm(2000_i64).await?;
+            if game.world.state == tankwar_protocol::MatchState::Running { storage.set_alarm(2000_i64).await?; }
         }
         if matches!(game.world.state, tankwar_protocol::MatchState::Finished | tankwar_protocol::MatchState::Aborted | tankwar_protocol::MatchState::Cancelled) {
             if game.world.state == tankwar_protocol::MatchState::Finished && !game.rating_published {

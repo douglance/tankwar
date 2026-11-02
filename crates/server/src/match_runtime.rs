@@ -88,6 +88,23 @@ impl DurableMatch {
         }
         Ok(frames)
     }
+    /// Recover against the persisted deadline; never silently pause match time.
+    pub fn recover(&mut self, now_ms: u64) -> Vec<tankwar_protocol::Snapshot> {
+        let Some(clock) = &self.clock else {
+            self.world.state = MatchState::Aborted;
+            self.ledger.state = MatchState::Aborted;
+            self.world_events.push(RecordedWorldEvent { tick: self.world.tick, event: WorldEvent::Aborted { reason: "clock_not_started".into() } });
+            return Vec::new();
+        };
+        let paused_millis = now_ms.saturating_sub(clock.next_tick_ms().saturating_sub(tankwar_sim::clock::TICK_MILLIS));
+        match self.advance_with_frames(now_ms) {
+            Ok(frames) => {
+                self.world_events.push(RecordedWorldEvent { tick: self.world.tick, event: WorldEvent::Recovered { paused_millis } });
+                frames
+            }
+            Err(_) => Vec::new(),
+        }
+    }
     /// Caller must persist the resulting record before returning an acceptance.
     pub fn accept(&mut self, agent: &str, command: Command) -> Decision {
         let mut ledger = self.ledger.clone();
@@ -207,6 +224,20 @@ mod tests {
         assert_eq!(game.world.tick, 2);
         assert_eq!(game.world.state, MatchState::Aborted);
         assert!(matches!(game.world_events.last().unwrap().event, WorldEvent::Aborted { .. }));
+    }
+    #[test] fn recovery_preserves_deadlines_and_aborts_large_gaps() {
+        let mut game = fixture(); game.world.state = MatchState::Ready; game.ledger.state = MatchState::Ready;
+        game.start(1_000).unwrap();
+        let frames = game.recover(1_150);
+        assert_eq!(frames.iter().map(|frame| frame.tick).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(game.advance(1_200), Ok(1));
+        assert!(game.recover(2_300).is_empty());
+        assert_eq!(game.world.tick, 4);
+        assert_eq!(game.world.state, MatchState::Aborted);
+        assert!(matches!(&game.world_events.last().unwrap().event, WorldEvent::Aborted { reason } if reason == "clock_overrun"));
+        let mut missing = fixture();
+        assert!(missing.recover(100).is_empty());
+        assert_eq!(missing.world.state, MatchState::Aborted);
     }
     #[test] fn catchup_records_each_authoritative_frame() {
         let mut game = fixture(); game.world.state = MatchState::Ready; game.ledger.state = MatchState::Ready;
