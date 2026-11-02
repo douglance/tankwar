@@ -14,6 +14,8 @@ An event has integer `sequence` and `tick`, plus an `event` object with `kind`. 
 
 The spectator feed also exposes `world_events` as `{ "tick": integer, "event": object }` records. The event object uses externally tagged JSON: `OrderApplied` (`id`), `OrderFailed` (`id`, `reason`), `Shot` (`seat`, `round`), `Impact` (`target`, a seat or null), `Destroyed` (`seat`), `Finished` (`winner`, a team number or null for a draw), `Aborted` (`reason`), `Cancelled` (`reason`), or `Recovered` (`paused_millis`). For example, `{ "tick": 42, "event": { "Shot": { "seat": "a", "round": "AP" } } }`. These world records have no independent sequence number, so a tick alone is not a unique replay cursor.
 
+New `Shot` events additionally have `trace` with `from_x_m`, `from_y_m`, `to_x_m`, `to_y_m`, `hit_kind` (`wall`, `structure`, `vehicle`, or `none`), and `target` (structure or seat ID, otherwise null). These are the authority's instantaneous approximate ray and first collision, in sim coordinates; a miss ends at its approximate 2 km range. Older archived shots have no trace and must not be rendered as if their endpoints were known.
+
 ## Snapshot
 
 A snapshot has `protocol_version`, `match_id`, `state`, `tick`, `sequence`, and `tanks`. Each tank has `seat_id`, `fuel_millilitres`, `engine_running`, `ammunition` (round type/count pairs), and `loaded_round`. These are spectator-oriented fields; an agent-facing projection must enforce crew visibility and must not expose enemy internals.

@@ -21,10 +21,17 @@ impl Vehicle {
     }
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ShotTrace {
+    pub from_x_m: f64, pub from_y_m: f64,
+    pub to_x_m: f64, pub to_y_m: f64,
+    pub hit_kind: String,
+    pub target: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WorldEvent {
     OrderApplied { id: String },
     OrderFailed { id: String, reason: String },
-    Shot { seat: String, round: String },
+    Shot { seat: String, round: String, #[serde(default)] trace: Option<ShotTrace> },
     Impact { target: Option<String> },
     Destroyed { seat: String },
     Finished { winner: Option<u8> },
@@ -111,12 +118,15 @@ impl World {
             match result {
                 Ok(round) => {
                     events.push(WorldEvent::OrderApplied { id: pending.id });
-                    if fire { if let Some(round) = round { events.push(WorldEvent::Shot { seat: pending.seat.clone(), round }); shots.push(pending.seat); } }
+                    if fire { if let Some(round) = round { let index = events.len(); events.push(WorldEvent::Shot { seat: pending.seat.clone(), round, trace: None }); shots.push((pending.seat, index)); } }
                 }
                 Err(reason) => events.push(WorldEvent::OrderFailed { id: pending.id, reason: reason.to_owned() }),
             }
         }
-        for seat in shots { self.resolve_shot(&seat, &mut events); }
+        for (seat, index) in shots {
+            let trace = self.resolve_shot(&seat, &mut events);
+            if let WorldEvent::Shot { trace: slot, .. } = &mut events[index] { *slot = Some(trace); }
+        }
         // Seat order makes simultaneous collision resolution reproducible.
         let seats: Vec<_> = self.vehicles.keys().cloned().collect();
         for seat in seats {
@@ -143,24 +153,33 @@ impl World {
         }
         events
     }
-    fn resolve_shot(&mut self, shooter: &str, events: &mut Vec<WorldEvent>) {
+    fn resolve_shot(&mut self, shooter: &str, events: &mut Vec<WorldEvent>) -> ShotTrace {
         let gun = &self.vehicles[shooter]; let start = gun.position;
         // Instantaneous 2 km ray and one hit point damage are approximations.
         let end = Vec3 { x:start.x + gun.heading_radians.cos()*2000., y:start.y + gun.heading_radians.sin()*2000., z:start.z };
         let targets: Vec<_> = self.vehicles.iter().filter(|(seat,v)| seat.as_str()!=shooter && v.hit_points>0).map(|(seat,v)| (seat.clone(),v.bounds())).collect();
         let structures: Vec<_> = self.structures.iter().enumerate().filter(|(_,s)| s.integrity > 0).map(|(i,s)| (i,s.bounds)).collect();
         let mut bounds = self.obstacles.clone(); bounds.extend(structures.iter().map(|(_,b)| *b)); bounds.extend(targets.iter().map(|(_,b)| *b));
-        if let Some((index,_)) = first_contact(start,end,&bounds) {
+        let mut trace = ShotTrace { from_x_m: start.x, from_y_m: start.y, to_x_m: end.x, to_y_m: end.y, hit_kind: "none".into(), target: None };
+        if let Some((index,fraction)) = first_contact(start,end,&bounds) {
+            trace.to_x_m = start.x + (end.x - start.x) * fraction;
+            trace.to_y_m = start.y + (end.y - start.y) * fraction;
+            trace.hit_kind = "wall".into();
             if let Some((structure, _)) = index.checked_sub(self.obstacles.len()).and_then(|i| structures.get(i)) {
                 self.structures[*structure].integrity -= 1;
+                trace.hit_kind = "structure".into();
+                trace.target = Some(self.structures[*structure].id.clone());
             }
             let target = index.checked_sub(self.obstacles.len() + structures.len()).map(|i| targets[i].0.clone());
             if let Some(seat) = &target {
+                trace.hit_kind = "vehicle".into();
+                trace.target = Some(seat.clone());
                 let v = self.vehicles.get_mut(seat).expect("target exists"); v.hit_points = v.hit_points.saturating_sub(1);
                 if v.hit_points == 0 { events.push(WorldEvent::Destroyed { seat: seat.clone() }); }
             }
             events.push(WorldEvent::Impact { target });
         }
+        trace
     }
 }
 
@@ -228,14 +247,27 @@ mod tests {
         for remaining in (0..3).rev() {
             w.vehicles.get_mut("a").unwrap().tank.chamber = Some("ap".into());
             w.enqueue(Pending { id:format!("shot-{remaining}"), seat:"a".into(), order:Order::Fire }).unwrap();
-            w.step();
+            let events = w.step();
+            let trace = events.iter().find_map(|e| match e { WorldEvent::Shot { trace: Some(trace), .. } => Some(trace), _ => None }).unwrap();
+            assert_eq!((trace.from_x_m, trace.from_y_m, trace.to_x_m, trace.to_y_m), (0., 0., 4., 0.));
+            assert_eq!(trace.hit_kind, "structure");
+            assert_eq!(trace.target.as_deref(), Some("home"));
             assert_eq!(w.structures[0].integrity, remaining);
             assert_eq!(w.vehicles["b"].hit_points, 1);
             assert_eq!(w.spectator_snapshot("m",0).structures[0].destroyed, remaining == 0);
         }
         w.vehicles.get_mut("a").unwrap().tank.chamber = Some("ap".into());
         w.enqueue(Pending { id:"last".into(), seat:"a".into(), order:Order::Fire }).unwrap();
-        assert!(w.step().contains(&WorldEvent::Destroyed { seat:"b".into() }));
+        let events = w.step();
+        assert!(events.contains(&WorldEvent::Destroyed { seat:"b".into() }));
+        let trace = events.iter().find_map(|e| match e { WorldEvent::Shot { trace: Some(trace), .. } => Some(trace), _ => None }).unwrap();
+        assert_eq!(trace.to_x_m, 9.);
+        assert_eq!(trace.hit_kind, "vehicle");
+        assert_eq!(trace.target.as_deref(), Some("b"));
+    }
+    #[test] fn old_archived_shots_remain_readable() {
+        let event: WorldEvent = serde_json::from_str(r#"{"Shot":{"seat":"a","round":"ap"}}"#).unwrap();
+        assert!(matches!(event, WorldEvent::Shot { trace: None, .. }));
     }
     #[test] fn movement_stops_at_cover_and_state_round_trips() {
         let wall=Bounds{min:Vec3{x:1.4,y:-2.,z:-2.},max:Vec3{x:2.,y:2.,z:2.}};
