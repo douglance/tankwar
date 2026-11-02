@@ -105,6 +105,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
 
 pub mod auth;
 pub mod access;
+pub mod archive;
 pub mod ledger;
 pub mod match_runtime;
 pub mod matchmaking;
@@ -135,8 +136,18 @@ pub struct MatchActor {
 #[derive(serde::Deserialize)]
 struct InternalCommand { agent_id: String, command: tankwar_protocol::Command }
 
-async fn persist_match_and_frames(storage: &Storage, game: match_runtime::DurableMatch, frames: Vec<tankwar_protocol::Snapshot>) -> Result<()> {
+async fn persist_match_and_frames(storage: &Storage, game: &mut match_runtime::DurableMatch, frames: Vec<tankwar_protocol::Snapshot>) -> Result<()> {
+    let batch = archive::prepare(game);
+    let game = game.clone();
     storage.transaction(move |transaction| async move {
+        for event in batch.commands {
+            let command = archive::event_command(&event).ok_or_else(|| Error::RustError("invalid archived command event".into()))?;
+            transaction.put(&archive::command_key(&command.id), &event).await?;
+            transaction.put(&format!("command/{:020}", event.sequence), &event).await?;
+        }
+        for (sequence, event) in batch.world_events {
+            transaction.put(&format!("world-event/{sequence:020}"), &event).await?;
+        }
         for frame in frames {
             transaction.put(&format!("replay/{:05}", frame.tick), &frame).await?;
         }
@@ -159,7 +170,7 @@ impl MatchActor {
                     if game.world.state != tankwar_protocol::MatchState::Running { return Ok(false); }
                     let frames = game.advance_with_frames(Date::now().as_millis()).unwrap_or_default();
                     let running = game.world.state == tankwar_protocol::MatchState::Running;
-                    persist_match_and_frames(&storage, game, frames).await?;
+                    persist_match_and_frames(&storage, &mut game, frames).await?;
                     Ok(running)
                 }.await;
                 if !matches!(outcome, Ok(true)) { break; }
@@ -194,11 +205,25 @@ impl DurableObject for MatchActor {
         }
         if req.path() == "/spectate" {
             let _guard = self.lock.lock().await;
-            let Some(game): Option<match_runtime::DurableMatch> = self.state.storage().get("match").await? else { return Response::error("match not found", 404); };
+            let storage = self.state.storage();
+            let Some(game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::error("match not found", 404); };
+            let mut commands = Vec::new();
+            for sequence in 1..=game.ledger.version {
+                if let Some(event) = storage.get::<tankwar_protocol::Event>(&format!("command/{sequence:020}")).await? { commands.push(event); }
+            }
+            commands.extend(game.ledger.events.clone());
+            commands.sort_by_key(|event| event.sequence);
+            if !archive::complete_commands(&commands, game.ledger.version) { return Response::error("command archive incomplete", 500); }
+            let mut world_events = Vec::new();
+            for sequence in 1..=game.archived_world_events {
+                let Some(event) = storage.get::<match_runtime::RecordedWorldEvent>(&format!("world-event/{sequence:020}")).await? else { return Response::error("event archive incomplete", 500); };
+                world_events.push(event);
+            }
+            world_events.extend(game.world_events.clone());
             return Response::from_json(&serde_json::json!({
                 "snapshot": game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version),
-                "commands": game.ledger.events,
-                "world_events": game.world_events,
+                "commands": commands,
+                "world_events": world_events,
             }));
         }
         if req.path() == "/replay" {
@@ -239,7 +264,7 @@ impl DurableObject for MatchActor {
                 frames.push(game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version));
             }
             let running = game.world.state == tankwar_protocol::MatchState::Running;
-            persist_match_and_frames(&storage, game, frames).await?;
+            persist_match_and_frames(&storage, &mut game, frames).await?;
             if running { storage.set_alarm(2000_i64).await?; self.start_loop(); }
             return Response::from_json(&serde_json::json!({"all_ready": all_ready, "running": running}));
         }
@@ -251,7 +276,7 @@ impl DurableObject for MatchActor {
             if game.world.state == tankwar_protocol::MatchState::Ready {
                 if let Err(reason) = game.start(Date::now().as_millis()) { return Response::error(reason, 409); }
                 let frame = game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version);
-                persist_match_and_frames(&storage, game, vec![frame]).await?;
+                persist_match_and_frames(&storage, &mut game, vec![frame]).await?;
             } else if game.world.state != tankwar_protocol::MatchState::Running { return Response::error("match not ready", 409); }
             storage.set_alarm(2000_i64).await?;
             self.start_loop();
@@ -262,9 +287,16 @@ impl DurableObject for MatchActor {
         let _guard = self.lock.lock().await;
         let storage = self.state.storage();
         let Some(mut game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::error("match not found", 404); };
+        if let Some(prior) = storage.get::<tankwar_protocol::Event>(&archive::command_key(&input.command.id)).await? {
+            return match game.ledger.decide_archived(&input.agent_id, &input.command, &prior) {
+                ledger::Decision::Duplicate(event) => Response::from_json(&event),
+                ledger::Decision::Reject(reason) => Response::error(reason, 409),
+                ledger::Decision::Accept(_) => Response::error("invalid archive decision", 500),
+            };
+        }
         match game.accept(&input.agent_id, input.command) {
             ledger::Decision::Accept(event) => {
-                storage.put("match", game).await?;
+                persist_match_and_frames(&storage, &mut game, Vec::new()).await?;
                 Response::from_json(&event)
             }
             ledger::Decision::Duplicate(event) => Response::from_json(&event),
@@ -278,12 +310,12 @@ impl DurableObject for MatchActor {
         let Some(mut game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::empty(); };
         if matches!(game.ledger.state, tankwar_protocol::MatchState::Assigned | tankwar_protocol::MatchState::Ready) && game.world.state == tankwar_protocol::MatchState::Ready {
             game.cancel_unready().map_err(|e| Error::RustError(e.into()))?;
-            storage.put("match", &game).await?;
+            persist_match_and_frames(&storage, &mut game, Vec::new()).await?;
         }
         if game.world.state == tankwar_protocol::MatchState::Running {
             if !self.loop_active.get() {
                 let frames = game.recover(Date::now().as_millis());
-                persist_match_and_frames(&storage, game.clone(), frames).await?;
+                persist_match_and_frames(&storage, &mut game, frames).await?;
                 if game.world.state == tankwar_protocol::MatchState::Running { self.start_loop(); }
             }
             if game.world.state == tankwar_protocol::MatchState::Running { storage.set_alarm(2000_i64).await?; }

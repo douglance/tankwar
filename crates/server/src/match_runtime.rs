@@ -7,7 +7,9 @@ use crate::ledger::{Decision, Ledger};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RecordedWorldEvent { pub tick: u64, pub event: WorldEvent }
 #[derive(Clone, Serialize, Deserialize)]
-pub struct DurableMatch { pub ledger: Ledger, pub world: World, pub world_events: Vec<RecordedWorldEvent>, pub clock: Option<tankwar_sim::clock::Clock>, pub ready_agents: std::collections::BTreeSet<String>, #[serde(default)] pub rating_published: bool, #[serde(default)] pub queue_released: bool }
+pub struct DurableMatch { pub ledger: Ledger, pub world: World, pub world_events: Vec<RecordedWorldEvent>, pub clock: Option<tankwar_sim::clock::Clock>, pub ready_agents: std::collections::BTreeSet<String>, #[serde(default)] pub rating_published: bool, #[serde(default)] pub queue_released: bool, #[serde(default)] pub archived_world_events: u64, #[serde(default)] pub finished: Option<Finished> }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Finished { pub winner: Option<u8> }
 impl DurableMatch {
     /// Prototype spawn values are approximations and do not describe a sourced vehicle.
     pub fn from_assignment(a: &crate::matchmaking::Assignment) -> Result<Self, &'static str> {
@@ -36,7 +38,7 @@ impl DurableMatch {
         }
         let world = World::new(vehicles, vec![]);
         let ledger = Ledger::new(a.match_id.clone(), seats);
-        Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false })
+        Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false, archived_world_events: 0, finished: None })
     }
     pub fn mark_ready(&mut self, agent: &str) -> Result<bool, &'static str> {
         if !self.ledger.seats.iter().any(|seat| seat.agent_id == agent) { return Err("unauthorized_seat"); }
@@ -139,9 +141,9 @@ impl DurableMatch {
     }
     pub fn result(&self) -> Result<(tankwar_sim::competition::Mode, Vec<String>, Vec<String>, tankwar_sim::competition::Outcome), &'static str> {
         use tankwar_sim::competition::{Mode, Outcome};
-        let winner = self.world_events.iter().find_map(|e| match &e.event {
+        let winner = self.finished.as_ref().map(|f| f.winner).or_else(|| self.world_events.iter().find_map(|e| match &e.event {
             WorldEvent::Finished { winner } => Some(*winner), _ => None,
-        }).ok_or("match_not_finished")?;
+        })).ok_or("match_not_finished")?;
         let mut first = Vec::new();
         let mut second = Vec::new();
         for seat in &self.ledger.seats {
@@ -154,7 +156,9 @@ impl DurableMatch {
     }
     /// Caller persists the result before publishing it; scheduling is external.
     pub fn tick(&mut self) {
-        self.world_events.extend(self.world.step().into_iter().map(|event| RecordedWorldEvent { tick: self.world.tick, event }));
+        let events = self.world.step();
+        for event in &events { if let WorldEvent::Finished { winner } = event { self.finished = Some(Finished { winner: *winner }); } }
+        self.world_events.extend(events.into_iter().map(|event| RecordedWorldEvent { tick: self.world.tick, event }));
         self.ledger.tick = self.world.tick;
         if self.world.state == MatchState::Finished { self.ledger.state = MatchState::Finished; }
     }
@@ -172,7 +176,7 @@ mod tests {
         let vehicle = |team,x| Vehicle { tank:tank(), team, position:Vec3{x,y:0.,z:0.}, heading_radians:0., speed_metres_per_second:10., turn_radians_per_second:1., half_extent_metres:1., hit_points:1 };
         let mut world = World::new(BTreeMap::from([("seat".into(),vehicle(0,0.)),("other".into(),vehicle(1,100.))]),vec![]); world.state=MatchState::Running;
         let mut ledger=Ledger::new("match".into(),vec![Seat{agent_id:"agent".into(),seat_id:"seat".into()}]); ledger.state=MatchState::Running;
-        DurableMatch{ledger,world,world_events:vec![],clock:None,ready_agents:Default::default(),rating_published:false,queue_released:false}
+        DurableMatch{ledger,world,world_events:vec![],clock:None,ready_agents:Default::default(),rating_published:false,queue_released:false,archived_world_events:0,finished:None}
     }
     #[test] fn observation_contains_only_the_assigned_vehicle() {
         let game = fixture();
@@ -267,6 +271,26 @@ mod tests {
         assert!(matches!(restored.accept("agent",command),Decision::Duplicate(_)));
         restored.tick(); assert_eq!(restored.world.vehicles["seat"].position.x,0.5);
         assert_eq!(restored.world_events.len(),1);
+    }
+    #[test] fn archived_history_keeps_match_state_bounded_and_retries_idempotent() {
+        let mut game = fixture();
+        let mut saved = BTreeMap::new();
+        for n in 0..10_000 {
+            let command = Command { protocol_version: 1, id: format!("order-{n}"), match_id: "match".into(), seat_id: "seat".into(), expected_version: None, order: Order::Engine { running: true } };
+            assert!(matches!(game.accept("agent", command.clone()), Decision::Accept(_)));
+            game.tick();
+            let batch = crate::archive::prepare(&mut game);
+            assert_eq!(batch.commands.len(), 1);
+            saved.insert(crate::archive::command_key(&command.id), batch.commands[0].clone());
+        }
+        assert_eq!(game.archived_world_events, 10_000);
+        assert!(serde_json::to_vec(&game).unwrap().len() < 10_000);
+        let prior = &saved[&crate::archive::command_key("order-0")];
+        let command = crate::archive::event_command(prior).unwrap();
+        assert_eq!(game.ledger.decide_archived("agent", command, prior), Decision::Duplicate(prior.clone()));
+        assert_eq!(game.ledger.decide_archived("intruder", command, prior), Decision::Reject("unauthorized_seat"));
+        let mut conflicting = command.clone(); conflicting.order = Order::Fire;
+        assert_eq!(game.ledger.decide_archived("agent", &conflicting, prior), Decision::Reject("command_id_conflict"));
     }
     #[test] fn timeout_applies_exactly_one_draw() {
         use tankwar_sim::competition::{Mode, Outcome, Ratings};

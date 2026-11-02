@@ -25,6 +25,21 @@ impl Ledger {
     pub fn new(match_id: String, seats: Vec<Seat>) -> Self {
         Self { match_id, state: MatchState::Assigned, tick: 0, version: 0, seats, events: Vec::new(), accepted: BTreeMap::new(), per_seat_tick: BTreeMap::new() }
     }
+    /// Remove newly archived entries after the caller has prepared durable writes.
+    pub fn take_history(&mut self) -> Vec<Event> {
+        self.accepted.clear();
+        std::mem::take(&mut self.events)
+    }
+    /// Validate a persisted idempotency record without exposing another seat's command.
+    pub fn decide_archived(&self, agent_id: &str, command: &Command, prior: &Event) -> Decision {
+        if !self.seats.iter().any(|s| s.agent_id == agent_id && s.seat_id == command.seat_id) { return Decision::Reject("unauthorized_seat"); }
+        if command.match_id != self.match_id { return Decision::Reject("wrong_match"); }
+        match &prior.event {
+            EventKind::Accepted { command: previous } if previous == command => Decision::Duplicate(prior.clone()),
+            EventKind::Accepted { .. } => Decision::Reject("command_id_conflict"),
+            _ => Decision::Reject("corrupt_ledger"),
+        }
+    }
     /// This changes only an in-memory copy; the caller must persist it atomically.
     pub fn decide(&mut self, agent_id: &str, command: Command) -> Decision {
         if !self.seats.iter().any(|s| s.agent_id == agent_id && s.seat_id == command.seat_id) { return Decision::Reject("unauthorized_seat"); }
