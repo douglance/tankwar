@@ -42,7 +42,7 @@ Acquired 2026-11-02 UTC. The archives are unmodified and passed ZIP integrity ch
 
 | Local archive | Source | SHA-256 |
 | --- | --- | --- |
-| `source-archives/reference/PanzerIV.zip` | User-provided; [creator page](https://isolatedsoulstudio.itch.io/lowpoly-tank-pack-01); rights unverified | `9fee81aa6eacc68966986f211c5a240105e257c76621dced01f19a8213cdd71b` |
+| Panzer IV sample | User-provided; [creator page](https://isolatedsoulstudio.itch.io/lowpoly-tank-pack-01); rights unverified. Kept only on a local machine. Not in this public repository. | `9fee81aa6eacc68966986f211c5a240105e257c76621dced01f19a8213cdd71b` |
 | `source-archives/newc42/tanks-fbx.zip` | [Newc42](https://newc-42.itch.io/german-low-poly-wwii-tanks); creator states CC0 | `39590a9f1ecf06a4fc03810e5a5f7e1e90861ea632622d0e29b5d1fe62177604` |
 | `source-archives/newc42/tanks-blender.zip` | Same pack, Blender source | `aca2117929ff8de3d2ce23127ea6a11122451ed9a02f3feb6b9ec4296f558c89` |
 | `source-archives/kenney/nature-kit.zip` | [Kenney on OpenGameArt](https://opengameart.org/content/nature-kit); CC0 | `fa7974a0d342bfe63c38664ba9f8ec1a4aab8ea25f099bdc56870e33588c4d9d` |

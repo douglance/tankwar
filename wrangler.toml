@@ -9,6 +9,11 @@ command = "cd crates/server && worker-build --release"
 [assets]
 directory = "dist/viewer"
 binding = "ASSETS"
+run_worker_first = true
+
+[[r2_buckets]]
+binding = "VIEWER"
+bucket_name = "tankwar-viewer"
 
 [[durable_objects.bindings]]
 name = "MATCHES"

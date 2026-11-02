@@ -1,0 +1,332 @@
+{
+ "snapshots": [
+  {
+   "protocol_version": 1,
+   "match_id": "m-c001",
+   "state": "running",
+   "tick": 0,
+   "sequence": 2,
+   "tanks": [
+    {
+     "seat_id": "west-1",
+     "fuel_millilitres": 300000,
+     "engine_running": false,
+     "ammunition": [
+      [
+       "ap",
+       40
+      ],
+      [
+       "he",
+       30
+      ]
+     ],
+     "loaded_round": null
+    },
+    {
+     "seat_id": "east-1",
+     "fuel_millilitres": 500000,
+     "engine_running": false,
+     "ammunition": [
+      [
+       "ap",
+       45
+      ],
+      [
+       "he",
+       40
+      ]
+     ],
+     "loaded_round": null
+    }
+   ]
+  },
+  {
+   "protocol_version": 1,
+   "match_id": "m-c001",
+   "state": "running",
+   "tick": 100,
+   "sequence": 9,
+   "tanks": [
+    {
+     "seat_id": "west-1",
+     "fuel_millilitres": 299200,
+     "engine_running": true,
+     "ammunition": [
+      [
+       "ap",
+       39
+      ],
+      [
+       "he",
+       30
+      ]
+     ],
+     "loaded_round": "ap"
+    },
+    {
+     "seat_id": "east-1",
+     "fuel_millilitres": 500000,
+     "engine_running": false,
+     "ammunition": [
+      [
+       "ap",
+       45
+      ],
+      [
+       "he",
+       40
+      ]
+     ],
+     "loaded_round": null
+    }
+   ]
+  },
+  {
+   "protocol_version": 1,
+   "match_id": "m-c001",
+   "state": "running",
+   "tick": 300,
+   "sequence": 16,
+   "tanks": [
+    {
+     "seat_id": "west-1",
+     "fuel_millilitres": 298100,
+     "engine_running": true,
+     "ammunition": [
+      [
+       "ap",
+       39
+      ],
+      [
+       "he",
+       30
+      ]
+     ],
+     "loaded_round": "ap"
+    },
+    {
+     "seat_id": "east-1",
+     "fuel_millilitres": 500000,
+     "engine_running": false,
+     "ammunition": [
+      [
+       "ap",
+       45
+      ],
+      [
+       "he",
+       40
+      ]
+     ],
+     "loaded_round": null
+    }
+   ]
+  },
+  {
+   "protocol_version": 1,
+   "match_id": "m-c001",
+   "state": "finished",
+   "tick": 400,
+   "sequence": 19,
+   "tanks": [
+    {
+     "seat_id": "west-1",
+     "fuel_millilitres": 297300,
+     "engine_running": true,
+     "ammunition": [
+      [
+       "ap",
+       39
+      ],
+      [
+       "he",
+       30
+      ]
+     ],
+     "loaded_round": "ap"
+    },
+    {
+     "seat_id": "east-1",
+     "fuel_millilitres": 500000,
+     "engine_running": false,
+     "ammunition": [
+      [
+       "ap",
+       45
+      ],
+      [
+       "he",
+       40
+      ]
+     ],
+     "loaded_round": null
+    }
+   ]
+  }
+ ],
+ "events": [
+  {
+   "sequence": 1,
+   "tick": 0,
+   "event": {
+    "kind": "state_changed",
+    "state": "running"
+   }
+  },
+  {
+   "sequence": 3,
+   "tick": 10,
+   "event": {
+    "kind": "accepted",
+    "command": {
+     "protocol_version": 1,
+     "id": "c-1",
+     "match_id": "m-c001",
+     "seat_id": "west-1",
+     "expected_version": null,
+     "order": {
+      "kind": "engine",
+      "running": true
+     }
+    }
+   }
+  },
+  {
+   "sequence": 4,
+   "tick": 12,
+   "event": {
+    "kind": "started",
+    "command_id": "c-1"
+   }
+  },
+  {
+   "sequence": 5,
+   "tick": 40,
+   "event": {
+    "kind": "completed",
+    "command_id": "c-1"
+   }
+  },
+  {
+   "sequence": 6,
+   "tick": 50,
+   "event": {
+    "kind": "accepted",
+    "command": {
+     "protocol_version": 1,
+     "id": "c-2",
+     "match_id": "m-c001",
+     "seat_id": "west-1",
+     "expected_version": null,
+     "order": {
+      "kind": "load",
+      "ammunition": "ap"
+     }
+    }
+   }
+  },
+  {
+   "sequence": 7,
+   "tick": 51,
+   "event": {
+    "kind": "started",
+    "command_id": "c-2"
+   }
+  },
+  {
+   "sequence": 8,
+   "tick": 60,
+   "event": {
+    "kind": "rejected",
+    "command_id": "c-9",
+    "reason": "<script>alert(1)</script> unknown order\u202e"
+   }
+  },
+  {
+   "sequence": 10,
+   "tick": 150,
+   "event": {
+    "kind": "completed",
+    "command_id": "c-2"
+   }
+  },
+  {
+   "sequence": 11,
+   "tick": 160,
+   "event": {
+    "kind": "accepted",
+    "command": {
+     "protocol_version": 1,
+     "id": "c-3",
+     "match_id": "m-c001",
+     "seat_id": "east-1",
+     "expected_version": null,
+     "order": {
+      "kind": "drive",
+      "throttle": 600,
+      "steering": -200,
+      "ttl_ticks": 40
+     }
+    }
+   }
+  },
+  {
+   "sequence": 12,
+   "tick": 161,
+   "event": {
+    "kind": "started",
+    "command_id": "c-3"
+   }
+  },
+  {
+   "sequence": 13,
+   "tick": 180,
+   "event": {
+    "kind": "interrupted",
+    "command_id": "c-3",
+    "reason": "engine not running"
+   }
+  },
+  {
+   "sequence": 14,
+   "tick": 200,
+   "event": {
+    "kind": "accepted",
+    "command": {
+     "protocol_version": 1,
+     "id": "c-4",
+     "match_id": "m-c001",
+     "seat_id": "west-1",
+     "expected_version": null,
+     "order": {
+      "kind": "fire"
+     }
+    }
+   }
+  },
+  {
+   "sequence": 15,
+   "tick": 201,
+   "event": {
+    "kind": "expired",
+    "command_id": "c-4"
+   }
+  },
+  {
+   "sequence": 17,
+   "tick": 400,
+   "event": {
+    "kind": "match_drawn"
+   }
+  },
+  {
+   "sequence": 18,
+   "tick": 400,
+   "event": {
+    "kind": "state_changed",
+    "state": "finished"
+   }
+  }
+ ]
+}

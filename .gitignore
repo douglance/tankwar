@@ -1,3 +1,5 @@
 /target/
 /crates/server/build/
 /.wrangler/
+/dist/
+/assets/source-archives/reference/
