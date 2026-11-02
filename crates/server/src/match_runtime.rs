@@ -215,6 +215,20 @@ mod tests {
         }
         assert!(game.world_events.iter().any(|e| matches!(e.event,WorldEvent::Shot { .. })), "no shots: west {:?}, east {:?}",game.world.vehicles["west-0"].position,game.world.vehicles["east-0"].position);
     }
+    #[test] fn crew_escapes_the_live_village_home_corner() {
+        let mut game = DurableMatch::village(0).unwrap();
+        game.ledger.seats.retain(|seat| seat.seat_id == "east-0");
+        let east = game.world.vehicles.get_mut("east-0").unwrap();
+        east.position = Vec3 { x:186.22241632283504, y:68.11255985325501, z:0. };
+        east.heading_radians = 2.5615926535897926;
+        let start = east.position;
+        let west = game.world.vehicles.get_mut("west-0").unwrap();
+        west.position = Vec3 { x:-171.0136086486189, y:17.700066848470463, z:0. };
+        west.heading_radians = 0.8000000000000003;
+        for _ in 0..400 { game.tick(); }
+        let end = game.world.vehicles["east-0"].position;
+        assert!((end.x-start.x).hypot(end.y-start.y) > 5., "crew stuck at {end:?}");
+    }
     #[test] fn exposed_crew_moves_behind_a_home() {
         use tankwar_sim::{geometry::Bounds, world::Structure};
         let mut game=fixture(); game.autonomous_crews=true;

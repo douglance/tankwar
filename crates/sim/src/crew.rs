@@ -9,6 +9,35 @@ fn distance(a: Vec3, b: Vec3) -> f64 { (a.x-b.x).hypot(a.y-b.y) }
 fn clear(a: Vec3, b: Vec3, obstacles: &[Bounds]) -> bool { obstacles.iter().all(|o| o.intersection(a,b).is_none()) }
 fn angle(value: f64) -> f64 { (value + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI }
 
+fn waypoint(start: Vec3, goal: Vec3, obstacles: &[Bounds], arena: Option<Bounds>) -> Option<Vec3> {
+    if clear(start, goal, obstacles) { return Some(goal); }
+    let mut nodes = vec![start, goal];
+    for b in obstacles {
+        for p in [Vec3{x:b.min.x-1.,y:b.min.y-1.,z:0.}, Vec3{x:b.min.x-1.,y:b.max.y+1.,z:0.}, Vec3{x:b.max.x+1.,y:b.min.y-1.,z:0.}, Vec3{x:b.max.x+1.,y:b.max.y+1.,z:0.}] {
+            let inside = arena.is_none_or(|a| p.x >= a.min.x+3. && p.x <= a.max.x-3. && p.y >= a.min.y+3. && p.y <= a.max.y-3.);
+            if inside && clear(p,p,obstacles) { nodes.push(p); }
+        }
+    }
+    let mut costs = vec![f64::INFINITY; nodes.len()];
+    let mut previous = vec![None; nodes.len()];
+    let mut visited = vec![false; nodes.len()];
+    costs[0] = 0.;
+    loop {
+        let Some(i) = (0..nodes.len()).filter(|i| !visited[*i] && costs[*i].is_finite()).min_by(|a,b| costs[*a].total_cmp(&costs[*b]).then(a.cmp(b))) else { return None; };
+        if i == 1 { break; }
+        visited[i] = true;
+        for j in 1..nodes.len() {
+            if !visited[j] && clear(nodes[i],nodes[j],obstacles) {
+                let candidate = costs[i]+distance(nodes[i],nodes[j]);
+                if candidate < costs[j] { costs[j]=candidate; previous[j]=Some(i); }
+            }
+        }
+    }
+    let mut i=1;
+    while let Some(parent)=previous[i] { if parent==0 { return Some(nodes[i]); } i=parent; }
+    None
+}
+
 /// Generate crew orders using the authoritative world; the caller records them as commands.
 pub fn orders(world: &World, seat: &str) -> Vec<Order> {
     let Some(own) = world.vehicles.get(seat) else { return vec![] };
@@ -34,17 +63,9 @@ pub fn orders(world: &World, seat: &str) -> Vec<Order> {
         let camera = Camera { position:own.position, forward:Vec3{x:own.heading_radians.cos(),y:own.heading_radians.sin(),z:0.}, horizontal_half_angle_radians:30_f64.to_radians(), max_range:1000. };
         if camera.sees_point(enemy.position, &solid) { destination = enemy.position; }
     }
-    // Route through a visible expanded-obstacle corner when the direct path is blocked.
-    let expanded: Vec<_> = solid.iter().map(|b| expanded(*b,own.half_extent_metres+0.5)).collect();
-    if !clear(own.position,destination,&expanded) {
-        let mut candidates = Vec::new();
-        for b in &expanded {
-            for p in [Vec3{x:b.min.x-1.,y:b.min.y-1.,z:0.}, Vec3{x:b.min.x-1.,y:b.max.y+1.,z:0.}, Vec3{x:b.max.x+1.,y:b.min.y-1.,z:0.}, Vec3{x:b.max.x+1.,y:b.max.y+1.,z:0.}] {
-                if clear(own.position,p,&expanded) { candidates.push(p); }
-            }
-        }
-        if let Some(p) = candidates.into_iter().min_by(|a,b| (distance(own.position,*a)+distance(*a,destination)).total_cmp(&(distance(own.position,*b)+distance(*b,destination)))) { destination=p; }
-    }
+    // Plan a complete route through visible expanded-obstacle corners.
+    let expanded: Vec<_> = solid.iter().map(|b| expanded(*b,own.half_extent_metres+0.01)).collect();
+    if let Some(p) = waypoint(own.position,destination,&expanded,world.playable_bounds) { destination=p; }
     let desired=(destination.y-own.position.y).atan2(destination.x-own.position.x);
     let error=angle(desired-own.heading_radians);
     let mut result=Vec::new();
