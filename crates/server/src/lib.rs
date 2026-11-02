@@ -21,6 +21,11 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return forward(&env, "LADDERS", "season-1", "/leaderboard", serde_json::json!({"mode":mode})).await;
     }
     let parts: Vec<_> = path.split('/').collect();
+    if parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && parts[4] == "spectate" && req.method() == Method::Get {
+        let match_id = parts[3];
+        if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
+        return forward(&env, "MATCHES", match_id, "/spectate", serde_json::json!({})).await;
+    }
     let is_queue = path == "/v1/queue";
     let is_match = parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && matches!(parts[4], "commands" | "ready" | "observe");
     if req.method() != Method::Post || !(is_queue || is_match) {
@@ -128,6 +133,15 @@ impl DurableObject for MatchActor {
                 storage.put("match", game).await?;
             }
             return Response::from_json(&serde_json::json!({"match_id": assignment.match_id}));
+        }
+        if req.path() == "/spectate" {
+            let _guard = self.lock.lock().await;
+            let Some(game): Option<match_runtime::DurableMatch> = self.state.storage().get("match").await? else { return Response::error("match not found", 404); };
+            return Response::from_json(&serde_json::json!({
+                "snapshot": game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version),
+                "commands": game.ledger.events,
+                "world_events": game.world_events,
+            }));
         }
         if req.path() == "/observe" {
             #[derive(serde::Deserialize)] struct Observe { agent_id: String }
