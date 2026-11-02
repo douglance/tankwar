@@ -2,7 +2,7 @@
 
 Audience: product owner and implementers. Purpose: build a browser-viewable, real-time WWII tank combat ladder operated by autonomous agents. Status: research and architecture draft, not an implemented or historically validated simulator. This plan uses the technical and developer documentation profile.
 
-Implementation detail, proposed defaults, interfaces, failure handling and acceptance gates: [BUILD_PLAN.md](BUILD_PLAN.md).
+Implementation detail, proposed defaults, interfaces, failure handling and acceptance gates: [BUILD_PLAN.md](BUILD_PLAN.md). Game design documents: [docs/game-design](docs/game-design/README.md).
 
 ## Product contract
 
