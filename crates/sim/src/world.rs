@@ -89,6 +89,9 @@ impl World {
         let mut events = Vec::new();
         if self.state != MatchState::Running { return events; }
         self.tick += 1;
+        // Resolve all eligible fire orders after accepting this tick's orders,
+        // so an earlier shot cannot suppress another shot in the same tick.
+        let mut shots = Vec::new();
         while let Some(pending) = self.pending.pop_front() {
             let fire = matches!(pending.order, Order::Fire);
             let vehicle = self.vehicles.get_mut(&pending.seat).expect("enqueue checks seat");
@@ -101,11 +104,12 @@ impl World {
             match result {
                 Ok(round) => {
                     events.push(WorldEvent::OrderApplied { id: pending.id });
-                    if fire { if let Some(round) = round { events.push(WorldEvent::Shot { seat: pending.seat.clone(), round }); self.resolve_shot(&pending.seat, &mut events); } }
+                    if fire { if let Some(round) = round { events.push(WorldEvent::Shot { seat: pending.seat.clone(), round }); shots.push(pending.seat); } }
                 }
                 Err(reason) => events.push(WorldEvent::OrderFailed { id: pending.id, reason: reason.to_owned() }),
             }
         }
+        for seat in shots { self.resolve_shot(&seat, &mut events); }
         // Seat order makes simultaneous collision resolution reproducible.
         let seats: Vec<_> = self.vehicles.keys().cloned().collect();
         for seat in seats {
@@ -187,6 +191,19 @@ mod tests {
         let mut w=world(vec![]); w.enqueue(Pending{id:"fire".into(),seat:"a".into(),order:Order::Fire}).unwrap();
         let e=w.step(); assert!(e.contains(&WorldEvent::Destroyed{seat:"b".into()}));
         assert!(e.contains(&WorldEvent::Finished{winner:Some(0)})); assert_eq!(w.vehicles["a"].tank.chamber,None);
+    }
+    #[test] fn simultaneous_opposing_shots_produce_draw_in_either_order() {
+        for (first, second) in [("a", "b"), ("b", "a")] {
+            let mut w=world(vec![]);
+            w.vehicles.get_mut("b").unwrap().heading_radians = std::f64::consts::PI;
+            for seat in [first, second] { w.enqueue(Pending { id:seat.into(), seat:seat.into(), order:Order::Fire }).unwrap(); }
+            let events=w.step();
+            assert!(events.contains(&WorldEvent::Destroyed { seat:"a".into() }));
+            assert!(events.contains(&WorldEvent::Destroyed { seat:"b".into() }));
+            assert!(events.contains(&WorldEvent::Finished { winner:None }));
+            assert_eq!(w.vehicles["a"].tank.chamber,None);
+            assert_eq!(w.vehicles["b"].tank.chamber,None);
+        }
     }
     #[test] fn obstacle_blocks_shot() {
         let wall=Bounds{min:Vec3{x:4.,y:-2.,z:-2.},max:Vec3{x:5.,y:2.,z:2.}};
