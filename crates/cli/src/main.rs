@@ -51,10 +51,12 @@ async fn send_order(command_json: &str) -> TypedResult<ServerOutput> {
 }
 
 async fn send_authenticated(path: &str, body: serde_json::Value) -> TypedResult<ServerOutput> {
-    let token = match std::env::var("TANKWAR_ACCESS_TOKEN") {
-        Ok(token) if !token.is_empty() => token,
-        _ => return TypedResult::error("missing_auth", "Set TANKWAR_ACCESS_TOKEN to an access token"),
-    };
+    let client_id = std::env::var("TANKWAR_ACCESS_CLIENT_ID").ok().filter(|v| !v.is_empty());
+    let client_secret = std::env::var("TANKWAR_ACCESS_CLIENT_SECRET").ok().filter(|v| !v.is_empty());
+    let token = std::env::var("TANKWAR_ACCESS_TOKEN").ok().filter(|v| !v.is_empty());
+    if client_id.is_some() != client_secret.is_some() || (client_id.is_none() && token.is_none()) {
+        return TypedResult::error("missing_auth", "Set both TANKWAR_ACCESS_CLIENT_ID and TANKWAR_ACCESS_CLIENT_SECRET");
+    }
     let base = std::env::var("TANKWAR_URL").unwrap_or_else(|_| "https://tankwar.doug-lance.workers.dev".into());
     let url = match server_url(&base, path) {
         Ok(url) => url,
@@ -64,7 +66,14 @@ async fn send_authenticated(path: &str, body: serde_json::Value) -> TypedResult<
         Ok(client) => client,
         Err(_) => return TypedResult::error("connection_error", "Could not create server client"),
     };
-    match client.post(url).bearer_auth(token).json(&body).send().await {
+    let mut request = client.post(url);
+    if let (Some(id), Some(secret)) = (client_id, client_secret) {
+        request = request.header("CF-Access-Client-Id", id).header("CF-Access-Client-Secret", secret);
+    } else if let Some(token) = token {
+        // Placeholder bearer credentials are retained for explicitly configured local servers.
+        request = request.bearer_auth(token);
+    }
+    match request.json(&body).send().await {
         Ok(response) => {
             let status = response.status();
             if !status.is_success() {

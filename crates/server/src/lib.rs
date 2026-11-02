@@ -58,9 +58,19 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     let (Ok(issuer), Ok(audience), Ok(jwks)) = (env.var("AUTH_ISSUER"), env.var("AUTH_AUDIENCE"), env.var("AUTH_JWKS")) else {
         return Response::error("authentication is not configured", 503);
     };
-    let authorization = req.headers().get("authorization")?.unwrap_or_default();
-    let Some(token) = authorization.strip_prefix("Bearer ") else { return Response::error("unauthorized", 401); };
-    let agent_id = match auth::verify_agent(token, &issuer.to_string(), &audience.to_string(), &jwks.to_string(), scope) {
+    let auth_mode = env.var("AUTH_MODE").map(|v| v.to_string()).unwrap_or_else(|_| "access".into());
+    let verification = if auth_mode == "placeholder" {
+        let authorization = req.headers().get("authorization")?.unwrap_or_default();
+        match authorization.strip_prefix("Bearer ") {
+            Some(token) => auth::verify_agent(token, &issuer.to_string(), &audience.to_string(), &jwks.to_string(), scope),
+            None => Err("missing_token"),
+        }
+    } else if auth_mode == "access" {
+        let Ok(grants) = env.var("ACCESS_AGENT_BINDINGS") else { return Response::error("authentication is not configured", 503); };
+        let assertion = req.headers().get("cf-access-jwt-assertion")?.unwrap_or_default();
+        access::verify_service(&assertion, &issuer.to_string(), &audience.to_string(), &jwks.to_string(), &grants.to_string(), scope)
+    } else { return Response::error("authentication is not configured", 503); };
+    let agent_id = match verification {
         Ok(agent) => agent,
         Err(_) => return Response::error("unauthorized", 401),
     };
@@ -94,6 +104,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
 }
 
 pub mod auth;
+pub mod access;
 pub mod ledger;
 pub mod match_runtime;
 pub mod matchmaking;
