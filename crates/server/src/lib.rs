@@ -16,7 +16,13 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     }
     let path = req.path();
     if path == "/tankwar-viewer_bg.wasm" && req.method() == Method::Get {
-        let Some(object) = env.bucket("VIEWER")?.get("tankwar-viewer_bg.wasm").execute().await? else {
+        let version = req.url()?.query_pairs().find(|(key, _)| key == "v").map(|(_, value)| value.into_owned());
+        let key = match version {
+            None => "tankwar-viewer_bg.wasm".to_owned(),
+            Some(hash) if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) => format!("tankwar-viewer-{hash}.wasm"),
+            Some(_) => return Response::error("invalid viewer version", 400),
+        };
+        let Some(object) = env.bucket("VIEWER")?.get(key).execute().await? else {
             return Response::error("spectator wasm missing", 404);
         };
         let Some(body) = object.body() else { return Response::error("spectator wasm missing", 404); };
@@ -26,6 +32,8 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return Ok(response);
     }
     if path == "/v1/matches" && req.method() == Method::Get {
+        let response = forward(&env, "MATCHES", "village", "/initialize-village", serde_json::json!({})).await?;
+        if response.status_code() != 200 { return Response::error("village unavailable", 503); }
         return forward(&env, "QUEUES", "global", "/directory", serde_json::json!({})).await;
     }
     if path == "/v1/leaderboard" && req.method() == Method::Get {
@@ -199,6 +207,18 @@ impl DurableObject for MatchActor {
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         if req.method() != Method::Post { return Response::error("not found", 404); }
+        if req.path() == "/initialize-village" {
+            let _guard = self.lock.lock().await;
+            let storage = self.state.storage();
+            if storage.get::<match_runtime::DurableMatch>("match").await?.is_none() {
+                let mut game = match_runtime::DurableMatch::village(Date::now().as_millis()).map_err(|e| Error::RustError(e.into()))?;
+                let initial = game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version);
+                persist_match_and_frames(&storage, &mut game, vec![initial]).await?;
+                storage.set_alarm(2000_i64).await?;
+                self.start_loop();
+            }
+            return Response::from_json(&serde_json::json!({"match_id":"village"}));
+        }
         if req.path() == "/initialize" {
             let assignment: matchmaking::Assignment = req.json().await?;
             let game = match match_runtime::DurableMatch::from_assignment(&assignment) {
@@ -422,7 +442,9 @@ impl DurableObject for QueueActor {
         if req.path() == "/directory" {
             let _guard = self.lock.lock().await;
             let queue: matchmaking::Queue = self.state.storage().get("queue").await?.unwrap_or_default();
-            return Response::from_json(queue.matches());
+            let mut matches = queue.matches().clone();
+            matches.insert("village".into(), tankwar_sim::competition::Mode::OneOnOne);
+            return Response::from_json(&matches);
         }
         if req.path() == "/leave" {
             #[derive(serde::Deserialize)] struct Leave { agent_id: String }

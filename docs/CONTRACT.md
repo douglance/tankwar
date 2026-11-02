@@ -68,3 +68,5 @@ Simulation coordinates are meters: x east, y north. Viewer x is east and viewer 
 | Wall | w1 | (-220, -20, -160, -16) |
 | Wall | w2 | (150, 20, 220, 24) |
 | Wall | w3 | (-24, -150, -16, -132) |
+
+The public `village` 1v1 match is an unranked prototype with deterministic crews. `GET /v1/matches` initializes it once and lists it; its replay and spectator endpoints use the same IDs as other matches. Crew orders enter the authoritative command ledger with deterministic IDs and execute at simulation ticks. Ranked agent-controlled matches do not use these crews. Village results do not reach the ladder. Crew navigation, aiming and tactics are approximations, not historical claims.

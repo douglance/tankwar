@@ -1,6 +1,7 @@
 //! Deterministic, server-owned simulation primitives.
 pub mod clock;
 pub mod lesmont;
+pub mod crew;
 use std::collections::BTreeMap;
 use tankwar_protocol::{MATCH_TICKS, MatchState};
 

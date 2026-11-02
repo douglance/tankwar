@@ -7,7 +7,7 @@ use crate::ledger::{Decision, Ledger};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RecordedWorldEvent { pub tick: u64, pub event: WorldEvent }
 #[derive(Clone, Serialize, Deserialize)]
-pub struct DurableMatch { pub ledger: Ledger, pub world: World, pub world_events: Vec<RecordedWorldEvent>, pub clock: Option<tankwar_sim::clock::Clock>, pub ready_agents: std::collections::BTreeSet<String>, #[serde(default)] pub rating_published: bool, #[serde(default)] pub queue_released: bool, #[serde(default)] pub archived_world_events: u64, #[serde(default)] pub finished: Option<Finished>, #[serde(default = "ranked_default")] pub ranked: bool }
+pub struct DurableMatch { pub ledger: Ledger, pub world: World, pub world_events: Vec<RecordedWorldEvent>, pub clock: Option<tankwar_sim::clock::Clock>, pub ready_agents: std::collections::BTreeSet<String>, #[serde(default)] pub rating_published: bool, #[serde(default)] pub queue_released: bool, #[serde(default)] pub archived_world_events: u64, #[serde(default)] pub finished: Option<Finished>, #[serde(default = "ranked_default")] pub ranked: bool, #[serde(default)] pub autonomous_crews: bool }
 fn ranked_default() -> bool { true }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Finished { pub winner: Option<u8> }
@@ -41,7 +41,14 @@ impl DurableMatch {
         world.structures = tankwar_sim::lesmont::structures();
         world.playable_bounds = Some(tankwar_sim::geometry::Bounds { min: Vec3 { x:-240., y:-180., z:-10. }, max: Vec3 { x:240., y:180., z:10. } });
         let ledger = Ledger::new(a.match_id.clone(), seats);
-        Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false, archived_world_events: 0, finished: None, ranked: true })
+        Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false, archived_world_events: 0, finished: None, ranked: true, autonomous_crews: false })
+    }
+    pub fn village(now_ms: u64) -> Result<Self, &'static str> {
+        let assignment = crate::matchmaking::Assignment { match_id:"village".into(), mode:tankwar_sim::competition::Mode::OneOnOne, first:vec!["crew-west".into()], second:vec!["crew-east".into()] };
+        let mut game = Self::from_assignment(&assignment)?;
+        game.ranked = false; game.autonomous_crews = true; game.queue_released = true;
+        game.mark_ready("crew-west")?; game.mark_ready("crew-east")?; game.start(now_ms)?;
+        Ok(game)
     }
     pub fn mark_ready(&mut self, agent: &str) -> Result<bool, &'static str> {
         if !self.ledger.seats.iter().any(|seat| seat.agent_id == agent) { return Err("unauthorized_seat"); }
@@ -161,6 +168,15 @@ impl DurableMatch {
     }
     /// Caller persists the result before publishing it; scheduling is external.
     pub fn tick(&mut self) {
+        if self.autonomous_crews && self.world.state == MatchState::Running && self.world.tick % 10 == 0 {
+            let seats = self.ledger.seats.clone();
+            for seat in seats {
+                for (index, order) in tankwar_sim::crew::orders(&self.world, &seat.seat_id).into_iter().enumerate() {
+                    let command = Command { protocol_version:tankwar_protocol::PROTOCOL_VERSION, id:format!("crew-{}-{}-{index}",seat.seat_id,self.world.tick), match_id:self.ledger.match_id.clone(), seat_id:seat.seat_id.clone(), expected_version:None, order };
+                    let _ = self.accept(&seat.agent_id, command);
+                }
+            }
+        }
         let events = self.world.step();
         for event in &events { if let WorldEvent::Finished { winner } = event { self.finished = Some(Finished { winner: *winner }); } }
         self.world_events.extend(events.into_iter().map(|event| RecordedWorldEvent { tick: self.world.tick, event }));
@@ -181,7 +197,55 @@ mod tests {
         let vehicle = |team,x| Vehicle { tank:tank(), team, position:Vec3{x,y:0.,z:0.}, heading_radians:0., speed_metres_per_second:10., turn_radians_per_second:1., half_extent_metres:1., hit_points:1 };
         let mut world = World::new(BTreeMap::from([("seat".into(),vehicle(0,0.)),("other".into(),vehicle(1,100.))]),vec![]); world.state=MatchState::Running;
         let mut ledger=Ledger::new("match".into(),vec![Seat{agent_id:"agent".into(),seat_id:"seat".into()}]); ledger.state=MatchState::Running;
-        DurableMatch{ledger,world,world_events:vec![],clock:None,ready_agents:Default::default(),rating_published:false,queue_released:false,archived_world_events:0,finished:None,ranked:true}
+        DurableMatch{ledger,world,world_events:vec![],clock:None,ready_agents:Default::default(),rating_published:false,queue_released:false,archived_world_events:0,finished:None,ranked:true,autonomous_crews:false}
+    }
+    #[test] fn village_crews_issue_recorded_orders_and_move() {
+        let mut game = DurableMatch::village(0).unwrap();
+        let start = game.world.vehicles["west-0"].position;
+        for _ in 0..180 { game.tick(); }
+        assert_ne!(game.world.vehicles["west-0"].position, start);
+        assert!(game.ledger.version > 0);
+        assert!(game.ledger.events.iter().any(|event| matches!(&event.event, tankwar_protocol::EventKind::Accepted { command } if matches!(command.order, Order::Drive { .. }))));
+    }
+    #[test] fn village_crews_load_and_can_engage() {
+        let mut game=DurableMatch::village(0).unwrap();
+        for _ in 0..3000 {
+            game.tick();
+            if game.world.state != MatchState::Running { break; }
+        }
+        assert!(game.world_events.iter().any(|e| matches!(e.event,WorldEvent::Shot { .. })), "no shots: west {:?}, east {:?}",game.world.vehicles["west-0"].position,game.world.vehicles["east-0"].position);
+    }
+    #[test] fn exposed_crew_moves_behind_a_home() {
+        use tankwar_sim::{geometry::Bounds, world::Structure};
+        let mut game=fixture(); game.autonomous_crews=true;
+        game.world.vehicles.get_mut("seat").unwrap().position.y=10.;
+        let enemy=game.world.vehicles.get_mut("other").unwrap(); enemy.position.y=10.; enemy.heading_radians=std::f64::consts::PI;
+        let home=Bounds { min:Vec3{x:20.,y:0.,z:-2.}, max:Vec3{x:30.,y:8.,z:10.} };
+        game.world.structures.push(Structure { id:"home".into(), bounds:home, integrity:3 });
+        let start=game.world.vehicles["seat"].position;
+        assert!(home.intersection(game.world.vehicles["other"].position,start).is_none());
+        let mut hidden=false;
+        for _ in 0..600 {
+            game.tick();
+            let p=game.world.vehicles["seat"].position;
+            if home.intersection(game.world.vehicles["other"].position,p).is_some() { hidden=true; break; }
+        }
+        assert!(hidden, "crew failed to reach cover: {:?}", game.world.vehicles["seat"].position);
+        assert_ne!(game.world.vehicles["seat"].position,start);
+    }
+    #[test] fn ranked_result_updates_public_entries_once_village_never_rates() {
+        use tankwar_sim::competition::{Mode, Ratings};
+        let assignment=crate::matchmaking::Assignment { match_id:"ranked".into(), mode:Mode::OneOnOne, first:vec!["alice".into()], second:vec!["bob".into()] };
+        let mut ranked=DurableMatch::from_assignment(&assignment).unwrap();
+        ranked.finished=Some(Finished { winner:Some(0) });
+        let mut ratings=Ratings::for_season("season-1").unwrap();
+        ranked.rate_finished(&mut ratings, Mode::OneOnOne).unwrap();
+        ranked.rate_finished(&mut ratings, Mode::OneOnOne).unwrap();
+        let before=ratings.leaderboard(Mode::OneOnOne);
+        assert_eq!(before.len(),2); assert_eq!(before[0].agent_id,"alice"); assert_eq!(before[0].rating,1516.); assert_eq!(before[0].games,1);
+        let mut village=DurableMatch::village(0).unwrap(); village.finished=Some(Finished { winner:Some(0) });
+        assert_eq!(village.rate_finished(&mut ratings, Mode::OneOnOne),Err("unranked_match"));
+        assert_eq!(ratings.leaderboard(Mode::OneOnOne),before);
     }
     #[test] fn observation_contains_only_the_assigned_vehicle() {
         let game = fixture();
