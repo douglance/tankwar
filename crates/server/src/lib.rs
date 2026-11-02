@@ -15,6 +15,11 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return Response::from_json(&serde_json::json!({"service":"tankwar","status":"initializing","matches_available":false}));
     }
     let path = req.path();
+    if path == "/v1/leaderboard" && req.method() == Method::Get {
+        let mode = req.url()?.query_pairs().find(|(key, _)| key == "mode").map(|(_, value)| value.into_owned()).unwrap_or_default();
+        if !matches!(mode.as_str(), "1v1" | "2v2") { return Response::error("invalid mode", 400); }
+        return forward(&env, "LADDERS", "season-1", "/leaderboard", serde_json::json!({"mode":mode})).await;
+    }
     let parts: Vec<_> = path.split('/').collect();
     let is_queue = path == "/v1/queue";
     let is_match = parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && matches!(parts[4], "commands" | "ready" | "observe");
@@ -235,7 +240,16 @@ impl DurableObject for LadderActor {
     fn new(state: State, _env: Env) -> Self { Self { state, lock: futures::lock::Mutex::new(()) } }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
-        if req.method() != Method::Post || req.path() != "/result" { return Response::error("not found", 404); }
+        if req.method() != Method::Post { return Response::error("not found", 404); }
+        if req.path() == "/leaderboard" {
+            #[derive(serde::Deserialize)] struct Query { mode: String }
+            let input: Query = req.json().await?;
+            let mode = match input.mode.as_str() { "1v1" => tankwar_sim::competition::Mode::OneOnOne, "2v2" => tankwar_sim::competition::Mode::TwoOnTwo, _ => return Response::error("invalid mode", 400) };
+            let _guard = self.lock.lock().await;
+            let ratings: tankwar_sim::competition::Ratings = self.state.storage().get("ratings").await?.unwrap_or(tankwar_sim::competition::Ratings::for_season("season-1").map_err(|e| Error::RustError(e.into()))?);
+            return Response::from_json(&serde_json::json!({"season":ratings.season(), "mode":input.mode, "entries":ratings.leaderboard(mode)}));
+        }
+        if req.path() != "/result" { return Response::error("not found", 404); }
         let input: InternalResult = req.json().await?;
         if input.season.is_empty() || input.season.len() > 128 { return Response::error("invalid season", 400); }
         let _guard = self.lock.lock().await;

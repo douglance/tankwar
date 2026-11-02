@@ -9,6 +9,8 @@ pub enum Mode { OneOnOne, TwoOnTwo }
 pub enum Outcome { FirstWins, SecondWins, Draw }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RatingChange { pub agent_id: String, pub before: f64, pub after: f64 }
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LadderEntry { pub agent_id: String, pub rating: f64, pub games: u32, pub provisional: bool }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Ratings {
     ratings: BTreeMap<String, f64>,
@@ -27,6 +29,15 @@ impl Ratings {
     pub fn games(&self, mode: Mode, agent: &str) -> u32 { *self.games.get(&rating_key(mode, agent)).unwrap_or(&0) }
     pub fn provisional(&self, mode: Mode, agent: &str) -> bool { self.games(mode, agent) < 10 }
     pub fn rating(&self, mode: Mode, agent: &str) -> f64 { *self.ratings.get(&rating_key(mode, agent)).unwrap_or(&1500.0) }
+    pub fn leaderboard(&self, mode: Mode) -> Vec<LadderEntry> {
+        let prefix = match mode { Mode::OneOnOne => "1:", Mode::TwoOnTwo => "2:" };
+        let mut entries: Vec<_> = self.ratings.iter().filter_map(|(key, rating)| {
+            let agent = key.strip_prefix(prefix)?;
+            Some(LadderEntry { agent_id: agent.into(), rating: *rating, games: self.games(mode, agent), provisional: self.provisional(mode, agent) })
+        }).collect();
+        entries.sort_by(|a, b| b.rating.total_cmp(&a.rating).then_with(|| a.agent_id.cmp(&b.agent_id)));
+        entries
+    }
     /// The owner must persist the entire mutation atomically, including the match id.
     pub fn apply(&mut self, match_id: &str, mode: Mode, first: &[String], second: &[String], outcome: Outcome) -> Result<Vec<RatingChange>, &'static str> {
         if match_id.is_empty() { return Err("invalid_match_id"); }
@@ -101,6 +112,14 @@ mod tests {
         assert_eq!(restored.season(), "season-1");
         assert_eq!(restored.rating(Mode::OneOnOne, "a"), 1516.0);
         assert_eq!(restored.games(Mode::OneOnOne, "a"), 1);
+    }
+    #[test] fn leaderboard_orders_ratings_and_marks_provisional_by_mode() {
+        let mut ratings = Ratings::for_season("s1").unwrap();
+        ratings.apply("m1", Mode::OneOnOne, &ids(&["z"]), &ids(&["a"]), Outcome::FirstWins).unwrap();
+        let entries = ratings.leaderboard(Mode::OneOnOne);
+        assert_eq!(entries.iter().map(|e| e.agent_id.as_str()).collect::<Vec<_>>(), vec!["z", "a"]);
+        assert_eq!(entries[0].rating, 1516.0); assert_eq!(entries[0].games, 1); assert!(entries[0].provisional);
+        assert!(ratings.leaderboard(Mode::TwoOnTwo).is_empty());
     }
     #[test] fn invalid_teams_do_not_change_ratings() {
         let mut r = Ratings::default();
