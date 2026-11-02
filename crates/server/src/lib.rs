@@ -15,6 +15,9 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return Response::from_json(&serde_json::json!({"service":"tankwar","status":"initializing","matches_available":false}));
     }
     let path = req.path();
+    if path == "/v1/matches" && req.method() == Method::Get {
+        return forward(&env, "QUEUES", "global", "/directory", serde_json::json!({})).await;
+    }
     if path == "/v1/leaderboard" && req.method() == Method::Get {
         let mode = req.url()?.query_pairs().find(|(key, _)| key == "mode").map(|(_, value)| value.into_owned()).unwrap_or_default();
         if !matches!(mode.as_str(), "1v1" | "2v2") { return Response::error("invalid mode", 400); }
@@ -26,7 +29,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
         return forward(&env, "MATCHES", match_id, "/spectate", serde_json::json!({})).await;
     }
-    let is_queue = path == "/v1/queue";
+    let is_queue = matches!(path.as_str(), "/v1/queue" | "/v1/queue/leave");
     let is_match = parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && matches!(parts[4], "commands" | "ready" | "observe");
     if req.method() != Method::Post || !(is_queue || is_match) {
         if !path.starts_with("/v1/") && matches!(req.method(), Method::Get | Method::Head) {
@@ -44,6 +47,9 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         Ok(agent) => agent,
         Err(_) => return Response::error("unauthorized", 401),
     };
+    if path == "/v1/queue/leave" {
+        return forward(&env, "QUEUES", "global", "/leave", serde_json::json!({"agent_id":agent_id})).await;
+    }
     if is_queue {
         #[derive(serde::Deserialize)] struct Join { mode: String }
         let input: Join = match req.json().await { Ok(input) => input, Err(_) => return Response::error("invalid queue request", 400) };
@@ -302,6 +308,22 @@ impl DurableObject for QueueActor {
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         if req.method() != Method::Post { return Response::error("not found", 404); }
+        if req.path() == "/directory" {
+            let _guard = self.lock.lock().await;
+            let queue: matchmaking::Queue = self.state.storage().get("queue").await?.unwrap_or_default();
+            return Response::from_json(queue.matches());
+        }
+        if req.path() == "/leave" {
+            #[derive(serde::Deserialize)] struct Leave { agent_id: String }
+            let input: Leave = req.json().await?;
+            let _guard = self.lock.lock().await;
+            let storage = self.state.storage();
+            let mut queue: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
+            if queue.assignment(&input.agent_id).is_some() { return Response::error("already assigned", 409); }
+            let left = queue.leave(&input.agent_id);
+            if left { storage.put("queue", queue).await?; }
+            return Response::from_json(&serde_json::json!({"left":left}));
+        }
         if req.path() == "/release" {
             #[derive(serde::Deserialize)] struct Release { match_id: String }
             let input: Release = req.json().await?;

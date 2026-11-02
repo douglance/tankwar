@@ -115,13 +115,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_authenticated(&format!("/v1/matches/{}/ready", ctx.args.match_id), serde_json::json!({})).await
         },
     ).description("Mark your assigned tank ready").done();
+    let leave = CommandDef::typed::<HealthArgs, Options, (), ServerOutput, _, _>(
+        "leave", |_ctx: TypedContext<HealthArgs, Options, ()>| async move { send_authenticated("/v1/queue/leave", serde_json::json!({})).await },
+    ).description("Leave the waiting queue").done();
     let observe = CommandDef::typed::<ReadyArgs, Options, (), ServerOutput, _, _>(
         "observe", |ctx: TypedContext<ReadyArgs, Options, ()>| async move {
             if !valid_match_id(&ctx.args.match_id) { return TypedResult::error("invalid_match", "Match ID contains invalid characters"); }
             send_authenticated(&format!("/v1/matches/{}/observe", ctx.args.match_id), serde_json::json!({})).await
         },
     ).description("Inspect your assigned tank's instruments").done();
-    Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("ready", ready).command("observe", observe).command("order", order).serve().await
+    Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("leave", leave).command("ready", ready).command("observe", observe).command("order", order).serve().await
 }
 
 #[cfg(test)]

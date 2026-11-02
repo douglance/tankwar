@@ -11,6 +11,7 @@ pub struct Queue {
     two: VecDeque<String>,
     assignments: BTreeMap<String, Assignment>,
     next_match: u64,
+    #[serde(default)] matches: BTreeMap<String, Mode>,
 }
 impl Queue {
     pub fn join(&mut self, agent: &str, mode: Mode) -> Result<Option<Assignment>, &'static str> {
@@ -29,9 +30,11 @@ impl Queue {
         let half = count / 2;
         let assignment = Assignment { match_id: format!("match-{next}"), mode, first: participants[..half].to_vec(), second: participants[half..].to_vec() };
         for agent in participants { self.assignments.insert(agent, assignment.clone()); }
+        self.matches.insert(assignment.match_id.clone(), mode);
         self.next_match = next;
         Ok(Some(assignment))
     }
+    pub fn matches(&self) -> &BTreeMap<String, Mode> { &self.matches }
     pub fn assignment(&self, agent: &str) -> Option<&Assignment> { self.assignments.get(agent) }
     /// Called only after the match owner has made the assignment terminal.
     pub fn release(&mut self, match_id: &str) {
@@ -60,6 +63,7 @@ mod tests {
         let restored: Queue=serde_json::from_slice(&serde_json::to_vec(&q).unwrap()).unwrap();
         assert_eq!(restored.assignment("d"), Some(&m));
         let mut restored = restored; restored.release(&m.match_id);
+        assert_eq!(restored.matches().get(&m.match_id), Some(&Mode::OneOnOne));
         assert!(restored.join("a", Mode::OneOnOne).unwrap().is_none());
     }
     #[test] fn forms_two_sides_of_two_and_cancels_waiting_ticket() {
