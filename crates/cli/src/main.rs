@@ -2,7 +2,7 @@ use incurs::cli::Cli;
 use incurs::command::{CommandDef, TypedContext, TypedResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tankwar_protocol::Command;
+use tankwar_protocol::{Command, Order};
 
 #[derive(Deserialize, incurs::Args)]
 struct HealthArgs {}
@@ -17,6 +17,14 @@ struct QueueArgs { /// Match mode, 1v1 or 2v2.
 #[derive(Deserialize, incurs::Args)]
 struct ReadyArgs { /// Match ID returned by the queue.
     match_id: String }
+#[derive(Deserialize, incurs::Args)]
+struct FireArgs { match_id: String, seat_id: String, command_id: String }
+#[derive(Deserialize, incurs::Args)]
+struct EngineArgs { match_id: String, seat_id: String, command_id: String, running: bool }
+#[derive(Deserialize, incurs::Args)]
+struct DriveArgs { match_id: String, seat_id: String, command_id: String, throttle: i16, steering: i16, ttl_ticks: u32 }
+#[derive(Deserialize, incurs::Args)]
+struct LoadArgs { match_id: String, seat_id: String, command_id: String, ammunition: String }
 #[derive(Deserialize, incurs::Options)]
 struct Options {}
 #[derive(JsonSchema, Serialize)]
@@ -44,10 +52,18 @@ async fn send_order(command_json: &str) -> TypedResult<ServerOutput> {
         Ok(value) => value,
         Err(_) => return TypedResult::error("invalid_command", "Command must be valid Tankwar command JSON"),
     };
+    send_command(command).await
+}
+
+async fn send_command(command: Command) -> TypedResult<ServerOutput> {
     if !valid_match_id(&command.match_id) {
         return TypedResult::error("invalid_command", "Match ID contains invalid characters");
     }
     send_authenticated(&format!("/v1/matches/{}/commands", command.match_id), serde_json::to_value(command).unwrap()).await
+}
+
+async fn crew_order(match_id: String, seat_id: String, id: String, order: Order) -> TypedResult<ServerOutput> {
+    send_command(Command { protocol_version: tankwar_protocol::PROTOCOL_VERSION, id, match_id, seat_id, expected_version: None, order }).await
 }
 
 async fn send_authenticated(path: &str, body: serde_json::Value) -> TypedResult<ServerOutput> {
@@ -112,6 +128,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let order = CommandDef::typed::<OrderArgs, Options, (), ServerOutput, _, _>(
         "order", |ctx: TypedContext<OrderArgs, Options, ()>| async move { send_order(&ctx.args.command).await },
     ).description("Submit a command to a match").done();
+    let fire = CommandDef::typed::<FireArgs, Options, (), ServerOutput, _, _>(
+        "fire", |ctx: TypedContext<FireArgs, Options, ()>| async move {
+            let a = ctx.args; crew_order(a.match_id, a.seat_id, a.command_id, Order::Fire).await
+        },
+    ).description("Fire the loaded round").done();
+    let engine = CommandDef::typed::<EngineArgs, Options, (), ServerOutput, _, _>(
+        "engine", |ctx: TypedContext<EngineArgs, Options, ()>| async move {
+            let a = ctx.args; crew_order(a.match_id, a.seat_id, a.command_id, Order::Engine { running: a.running }).await
+        },
+    ).description("Start or stop the engine").done();
+    let drive = CommandDef::typed::<DriveArgs, Options, (), ServerOutput, _, _>(
+        "drive", |ctx: TypedContext<DriveArgs, Options, ()>| async move {
+            let a = ctx.args; crew_order(a.match_id, a.seat_id, a.command_id, Order::Drive { throttle:a.throttle, steering:a.steering, ttl_ticks:a.ttl_ticks }).await
+        },
+    ).description("Set throttle and steering for a bounded number of ticks").done();
+    let load = CommandDef::typed::<LoadArgs, Options, (), ServerOutput, _, _>(
+        "load", |ctx: TypedContext<LoadArgs, Options, ()>| async move {
+            let a = ctx.args; crew_order(a.match_id, a.seat_id, a.command_id, Order::Load { ammunition:a.ammunition }).await
+        },
+    ).description("Load an ammunition type").done();
     let queue = CommandDef::typed::<QueueArgs, Options, (), ServerOutput, _, _>(
         "queue", |ctx: TypedContext<QueueArgs, Options, ()>| async move {
             if !matches!(ctx.args.mode.as_str(), "1v1" | "2v2") { return TypedResult::error("invalid_mode", "Mode must be 1v1 or 2v2"); }
@@ -139,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_authenticated(&format!("/v1/matches/{}/look", ctx.args.match_id), serde_json::json!({})).await
         },
     ).description("Look through the approximate forward sight").done();
-    Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("leave", leave).command("ready", ready).command("observe", observe).command("look", look).command("order", order).serve().await
+    Cli::create("tankwar").version("0.1.0").command("health", health).command("queue", queue).command("leave", leave).command("ready", ready).command("observe", observe).command("look", look).command("order", order).command("fire", fire).command("engine", engine).command("drive", drive).command("load", load).serve().await
 }
 
 #[cfg(test)]

@@ -36,6 +36,49 @@ fn cli_forwards_cloudflare_access_service_credentials() {
     verify_forwarding(true);
 }
 
+#[test]
+fn direct_crew_commands_forward_typed_orders() {
+    let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
+        (vec!["fire", "match-1", "seat-1", "cmd-fire"], serde_json::json!({"kind":"fire"})),
+        (vec!["engine", "match-1", "seat-1", "cmd-engine", "true"], serde_json::json!({"kind":"engine", "running":true})),
+        (vec!["drive", "match-1", "seat-1", "cmd-drive", "500", "100", "20"], serde_json::json!({"kind":"drive", "throttle":500, "steering":100, "ttl_ticks":20})),
+        (vec!["drive", "match-1", "seat-1", "cmd-reverse", "--", "-500", "-100", "20"], serde_json::json!({"kind":"drive", "throttle":-500, "steering":-100, "ttl_ticks":20})),
+        (vec!["load", "match-1", "seat-1", "cmd-load", "ap"], serde_json::json!({"kind":"load", "ammunition":"ap"})),
+    ];
+    for (args, expected) in cases {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tankwar"))
+            .env("TANKWAR_URL", format!("http://{address}"))
+            .env("TANKWAR_ACCESS_TOKEN", "test-secret")
+            .env_remove("TANKWAR_ACCESS_CLIENT_ID").env_remove("TANKWAR_ACCESS_CLIENT_SECRET")
+            .args(&args).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (mut socket, _) = loop {
+            match listener.accept() {
+                Ok(socket) => break socket,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                    if let Some(status) = child.try_wait().unwrap() { panic!("CLI exited before forwarding {:?}: {status}", args); }
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("CLI did not connect for {:?}: {e}", args),
+            }
+        };
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut bytes=Vec::new();
+        let header_end = loop { let mut b=[0;1024]; let n=socket.read(&mut b).unwrap(); assert!(n>0); bytes.extend_from_slice(&b[..n]); if let Some(i)=bytes.windows(4).position(|w|w==b"\r\n\r\n") { break i+4; } };
+        let headers=String::from_utf8_lossy(&bytes[..header_end]);
+        let length: usize=headers.lines().find_map(|line| { let (k,v)=line.split_once(':')?; k.eq_ignore_ascii_case("content-length").then(||v.trim().parse().unwrap()) }).unwrap();
+        while bytes.len()<header_end+length { let mut b=[0;1024]; let n=socket.read(&mut b).unwrap(); assert!(n>0); bytes.extend_from_slice(&b[..n]); }
+        let body: serde_json::Value=serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
+        assert_eq!(body["id"], args[3]);
+        assert_eq!(body["order"], expected);
+        socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+}
+
 fn verify_forwarding(access: bool) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
