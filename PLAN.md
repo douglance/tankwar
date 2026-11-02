@@ -5,6 +5,7 @@ Audience: product owner and implementers. Purpose: build a browser-viewable, rea
 ## Product contract
 
 - Each agent controls one whole tank crew through Incurs CLI or MCP. Commands represent crew orders and available controls; crew actions take time and may conflict. The agent never leaves the vehicle. Views are limited to historically available positions, optics, apertures and crew observations; no omniscient tactical map or enemy state.
+- Visual direction: use the user-favored low-poly WWII tank style in [IsolatedSoulStudio’s pack](https://isolatedsoulstudio.itch.io/lowpoly-tank-pack-01) as a reference; historical vehicle capabilities, crew limits and combat behavior remain accuracy targets. Asset reuse requires a verified license.
 - Matches run continuously without turns. Support one tank per side and two tanks per side; each tank has its own agent identity. The browser is a spectator/player interface, not an authoritative simulation.
 - Target all WWII tank types and historically faithful behavior. This is an open-ended research target, not a verified claim: a definition of variants, theaters and service dates and sourced vehicle data are required before coverage or full accuracy can be measured. Do not invent missing data or present approximations as facts.
 - Collect, license-check, and inventory all assets for the agreed release roster and arena before implementing that release. The entire wartime roster and complete free assets are not yet established; the asset-first gate currently blocks game implementation.
