@@ -16,7 +16,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     }
     let path = req.path();
     if path == "/tankwar-viewer_bg.wasm" && req.method() == Method::Get {
-        let Some(object) = env.bucket("VIEWER")?.get("tankwar-viewer_bg.wasm").await? else {
+        let Some(object) = env.bucket("VIEWER")?.get("tankwar-viewer_bg.wasm").execute().await? else {
             return Response::error("spectator wasm missing", 404);
         };
         let Some(body) = object.body() else { return Response::error("spectator wasm missing", 404); };
