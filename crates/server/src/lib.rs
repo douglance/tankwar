@@ -39,6 +39,13 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
         return forward(&env, "MATCHES", match_id, "/spectate", serde_json::json!({})).await;
     }
+    if parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && parts[4] == "replay" && req.method() == Method::Get {
+        let match_id = parts[3];
+        if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
+        let tick = req.url()?.query_pairs().find(|(key, _)| key == "tick").and_then(|(_, value)| value.parse::<u64>().ok());
+        let Some(tick) = tick.filter(|tick| *tick <= tankwar_protocol::MATCH_TICKS) else { return Response::error("invalid replay tick", 400); };
+        return forward(&env, "MATCHES", match_id, "/replay", serde_json::json!({"tick":tick})).await;
+    }
     let is_queue = matches!(path.as_str(), "/v1/queue" | "/v1/queue/leave");
     let is_match = parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && matches!(parts[4], "commands" | "ready" | "observe");
     if req.method() != Method::Post || !(is_queue || is_match) {
@@ -117,6 +124,15 @@ pub struct MatchActor {
 #[derive(serde::Deserialize)]
 struct InternalCommand { agent_id: String, command: tankwar_protocol::Command }
 
+async fn persist_match_and_frames(storage: &Storage, game: match_runtime::DurableMatch, frames: Vec<tankwar_protocol::Snapshot>) -> Result<()> {
+    storage.transaction(move |transaction| async move {
+        for frame in frames {
+            transaction.put(&format!("replay/{:05}", frame.tick), &frame).await?;
+        }
+        transaction.put("match", &game).await
+    }).await
+}
+
 impl MatchActor {
     fn start_loop(&self) {
         if self.loop_active.replace(true) { return; }
@@ -130,9 +146,9 @@ impl MatchActor {
                 let outcome: Result<bool> = async {
                     let Some(mut game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Ok(false); };
                     if game.world.state != tankwar_protocol::MatchState::Running { return Ok(false); }
-                    let _ = game.advance(Date::now().as_millis());
+                    let frames = game.advance_with_frames(Date::now().as_millis()).unwrap_or_default();
                     let running = game.world.state == tankwar_protocol::MatchState::Running;
-                    storage.put("match", game).await?;
+                    persist_match_and_frames(&storage, game, frames).await?;
                     Ok(running)
                 }.await;
                 if !matches!(outcome, Ok(true)) { break; }
@@ -174,6 +190,13 @@ impl DurableObject for MatchActor {
                 "world_events": game.world_events,
             }));
         }
+        if req.path() == "/replay" {
+            #[derive(serde::Deserialize)] struct ReplayRequest { tick: u64 }
+            let input: ReplayRequest = req.json().await?;
+            let _guard = self.lock.lock().await;
+            let frame: Option<tankwar_protocol::Snapshot> = self.state.storage().get(&format!("replay/{:05}", input.tick)).await?;
+            return match frame { Some(frame) => Response::from_json(&frame), None => Response::error("replay frame unavailable", 404) };
+        }
         if req.path() == "/observe" {
             #[derive(serde::Deserialize)] struct Observe { agent_id: String }
             let input: Observe = req.json().await?;
@@ -196,11 +219,13 @@ impl DurableObject for MatchActor {
                 Ok(ready) => ready,
                 Err(reason) => return Response::error(reason, 409),
             };
+            let mut frames = Vec::new();
             if all_ready && game.world.state == tankwar_protocol::MatchState::Ready {
                 if let Err(reason) = game.start(Date::now().as_millis()) { return Response::error(reason, 409); }
+                frames.push(game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version));
             }
             let running = game.world.state == tankwar_protocol::MatchState::Running;
-            storage.put("match", game).await?;
+            persist_match_and_frames(&storage, game, frames).await?;
             if running { storage.set_alarm(2000_i64).await?; self.start_loop(); }
             return Response::from_json(&serde_json::json!({"all_ready": all_ready, "running": running}));
         }
@@ -211,7 +236,8 @@ impl DurableObject for MatchActor {
             let Some(mut game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::error("match not found", 404); };
             if game.world.state == tankwar_protocol::MatchState::Ready {
                 if let Err(reason) = game.start(Date::now().as_millis()) { return Response::error(reason, 409); }
-                storage.put("match", &game).await?;
+                let frame = game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version);
+                persist_match_and_frames(&storage, game, vec![frame]).await?;
             } else if game.world.state != tankwar_protocol::MatchState::Running { return Response::error("match not ready", 409); }
             storage.set_alarm(2000_i64).await?;
             self.start_loop();

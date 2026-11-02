@@ -66,6 +66,10 @@ impl DurableMatch {
     }
     /// Advance no more than the allowed catch-up window, or abort without inventing ticks.
     pub fn advance(&mut self, now_ms: u64) -> Result<u64, &'static str> {
+        self.advance_with_frames(now_ms).map(|frames| frames.len() as u64)
+    }
+    /// Collect the exact spectator state after each simulated tick for durable replay.
+    pub fn advance_with_frames(&mut self, now_ms: u64) -> Result<Vec<tankwar_protocol::Snapshot>, &'static str> {
         if self.world.state != MatchState::Running { return Err("match_not_running"); }
         let due = match self.clock.as_mut().ok_or("clock_not_started")?.due(now_ms) {
             Ok(due) => due,
@@ -76,13 +80,13 @@ impl DurableMatch {
                 return Err(reason);
             }
         };
-        let mut advanced = 0;
+        let mut frames = Vec::new();
         for _ in 0..due {
             if self.world.state != MatchState::Running { break; }
             self.tick();
-            advanced += 1;
+            frames.push(self.world.spectator_snapshot(&self.ledger.match_id, self.ledger.version));
         }
-        Ok(advanced)
+        Ok(frames)
     }
     /// Caller must persist the resulting record before returning an acceptance.
     pub fn accept(&mut self, agent: &str, command: Command) -> Decision {
@@ -203,6 +207,19 @@ mod tests {
         assert_eq!(game.world.tick, 2);
         assert_eq!(game.world.state, MatchState::Aborted);
         assert!(matches!(game.world_events.last().unwrap().event, WorldEvent::Aborted { .. }));
+    }
+    #[test] fn catchup_records_each_authoritative_frame() {
+        let mut game = fixture(); game.world.state = MatchState::Ready; game.ledger.state = MatchState::Ready;
+        game.start(1000).unwrap();
+        let command=Command{protocol_version:1,id:"drive".into(),match_id:"match".into(),seat_id:"seat".into(),expected_version:None,order:Order::Drive{throttle:1000,steering:0,ttl_ticks:10}};
+        assert!(matches!(game.accept("agent",command),Decision::Accept(_)));
+        let frames=game.advance_with_frames(1100).unwrap();
+        assert_eq!(frames.len(),2);
+        assert_eq!((frames[0].tick,frames[1].tick),(1,2));
+        assert_eq!(frames[0].tanks[0].x_m,Some(100.0));
+        assert_eq!(frames[0].tanks[1].x_m,Some(0.5));
+        assert_eq!(frames[1].tanks[1].x_m,Some(1.0));
+        assert_eq!(frames[1],game.world.spectator_snapshot("match",1));
     }
     #[test] fn accepted_command_survives_serialization_and_applies_once() {
         let mut game=fixture(); let command=Command{protocol_version:1,id:"order".into(),match_id:"match".into(),seat_id:"seat".into(),expected_version:None,order:Order::Drive{throttle:1000,steering:0,ttl_ticks:1}};
