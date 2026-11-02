@@ -23,3 +23,15 @@ The material is a surface, not terrain geometry. Check its historical and visual
 | [Kenney Impact Sounds](https://kenney.nl/assets/impact-sounds) | 130 general impact sounds | Page lists CC0; direct request returned HTTP 403. Not downloaded; no claim of period-specific recordings. |
 
 A complete, usable arena, tank interiors, sights, vehicle sounds and all wartime variants remain missing. All candidates still require suitability and historical review.
+
+## Low-poly environment candidates
+
+| Candidate | Intended use | License and acquisition |
+| --- | --- | --- |
+| [Kenney Nature Kit](https://kenney.nl/assets/nature-kit) | Trees, rocks, vegetation | CC0; download blocked by HTTP 403 from the original site. |
+| [Kenney City Kit Roads](https://kenney.nl/assets/city-kit-roads) | Modular roads | CC0; source blocked by HTTP 403; modern markings, barriers and signs need period review. |
+| [Kenney Modular Buildings](https://kenney.nl/assets/modular-buildings) | Buildings and construction pieces | CC0; not downloaded; period fit and damage variants unverified. |
+| [Quaternius Ultimate Modular Ruins](https://quaternius.com/packs/ultimatemodularruins.html) | Broken walls, rubble and modular ruins | CC0; publisher's download folder was inaccessible from the web tool; medieval/fantasy pieces need visual and period review. |
+| [Majadroid Apocalyptic Buildings](https://majadroid.itch.io/3d-apocalyptic-building-city-cc0) | Ruined buildings and wreckage | Creator permits commercial use and describes CC0; not downloaded; skyscraper styling may not fit the chosen theater. |
+
+The alternative model mirror failed TLS certificate verification and its storage endpoint returned HTTP 403. No models were downloaded from it. The environment remains incomplete: a playable battlefield, terrain geometry, period-appropriate ruins, roads and debris still require acquisition and review.
