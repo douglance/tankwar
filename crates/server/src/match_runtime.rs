@@ -86,7 +86,9 @@ impl DurableMatch {
     /// Collect the exact spectator state after each simulated tick for durable replay.
     pub fn advance_with_frames(&mut self, now_ms: u64) -> Result<Vec<tankwar_protocol::Snapshot>, &'static str> {
         if self.world.state != MatchState::Running { return Err("match_not_running"); }
-        let due = match self.clock.as_mut().ok_or("clock_not_started")?.due(now_ms) {
+        let clock = self.clock.as_mut().ok_or("clock_not_started")?;
+        let first_deadline_ms = clock.next_tick_ms();
+        let due = match clock.due(now_ms) {
             Ok(due) => due,
             Err(reason) => {
                 self.world.state = MatchState::Aborted;
@@ -96,10 +98,13 @@ impl DurableMatch {
             }
         };
         let mut frames = Vec::new();
-        for _ in 0..due {
+        for index in 0..due {
             if self.world.state != MatchState::Running { break; }
             self.tick();
-            frames.push(self.world.spectator_snapshot(&self.ledger.match_id, self.ledger.version));
+            let mut frame = self.world.spectator_snapshot(&self.ledger.match_id, self.ledger.version);
+            frame.scheduled_at_ms = Some(first_deadline_ms + index * tankwar_sim::clock::TICK_MILLIS);
+            frame.processed_at_ms = Some(now_ms);
+            frames.push(frame);
         }
         Ok(frames)
     }
@@ -333,6 +338,8 @@ mod tests {
         game.start(1_000).unwrap();
         let frames = game.recover(1_150);
         assert_eq!(frames.iter().map(|frame| frame.tick).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(frames.iter().map(|frame| frame.scheduled_at_ms).collect::<Vec<_>>(), vec![Some(1050), Some(1100), Some(1150)]);
+        assert_eq!(frames.iter().map(|frame| frame.processed_at_ms).collect::<Vec<_>>(), vec![Some(1150); 3]);
         assert_eq!(game.advance(1_200), Ok(1));
         assert!(game.recover(2_300).is_empty());
         assert_eq!(game.world.tick, 4);
@@ -353,7 +360,10 @@ mod tests {
         assert_eq!(frames[0].tanks[0].x_m,Some(100.0));
         assert_eq!(frames[0].tanks[1].x_m,Some(0.5));
         assert_eq!(frames[1].tanks[1].x_m,Some(1.0));
-        assert_eq!(frames[1],game.world.spectator_snapshot("match",1));
+        let mut expected = game.world.spectator_snapshot("match",1);
+        expected.scheduled_at_ms = Some(1100);
+        expected.processed_at_ms = Some(1100);
+        assert_eq!(frames[1], expected);
     }
     #[test] fn accepted_command_survives_serialization_and_applies_once() {
         let mut game=fixture(); let command=Command{protocol_version:1,id:"order".into(),match_id:"match".into(),seat_id:"seat".into(),expected_version:None,order:Order::Drive{throttle:1000,steering:0,ttl_ticks:1}};

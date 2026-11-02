@@ -84,7 +84,7 @@ impl World {
     /// Omniscient spectator projection. This must never be returned as an agent view.
     pub fn spectator_snapshot(&self, match_id: &str, sequence: u64) -> tankwar_protocol::Snapshot {
         use tankwar_protocol::{Snapshot, TankSnapshot, PROTOCOL_VERSION};
-        Snapshot { protocol_version: PROTOCOL_VERSION, match_id: match_id.into(), state: self.state.clone(), tick: self.tick, sequence,
+        Snapshot { protocol_version: PROTOCOL_VERSION, match_id: match_id.into(), state: self.state.clone(), tick: self.tick, sequence, scheduled_at_ms: None, processed_at_ms: None,
             tanks: self.vehicles.iter().map(|(seat, v)| TankSnapshot {
                 seat_id: seat.clone(), fuel_millilitres: v.tank.fuel_ml, engine_running: v.tank.engine_running,
                 ammunition: v.tank.ammunition.iter().map(|(kind, count)| (kind.clone(), *count)).collect(),
