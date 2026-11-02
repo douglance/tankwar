@@ -217,11 +217,17 @@ impl DurableObject for MatchActor {
             } else {
                 let mut game = match_runtime::DurableMatch::village_named(&input.match_id, Date::now().as_millis()).map_err(|e| Error::RustError(e.into()))?;
                 let initial = game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version);
-                persist_match_and_frames(&storage, &mut game, vec![initial]).await?;
+                // Arm recovery before making a running match durable. If the write
+                // fails, the alarm harmlessly finds no match; the reverse ordering
+                // can leave a durable running match without any recovery trigger.
                 storage.set_alarm(2000_i64).await?;
-                self.start_loop();
+                persist_match_and_frames(&storage, &mut game, vec![initial]).await?;
                 game
             };
+            if game.world.state == tankwar_protocol::MatchState::Running {
+                if storage.get_alarm().await?.is_none() { storage.set_alarm(2000_i64).await?; }
+                self.start_loop();
+            }
             return Response::from_json(&serde_json::json!({"match_id":game.ledger.match_id,"state":game.world.state}));
         }
         if req.path() == "/initialize" {
