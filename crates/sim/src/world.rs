@@ -29,6 +29,7 @@ pub enum WorldEvent {
     Destroyed { seat: String },
     Finished { winner: Option<u8> },
     Aborted { reason: String },
+    Cancelled { reason: String },
     Recovered { paused_millis: u64 },
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

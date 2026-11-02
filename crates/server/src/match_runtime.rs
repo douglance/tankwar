@@ -49,6 +49,13 @@ impl DurableMatch {
         }
         Ok(false)
     }
+    pub fn cancel_unready(&mut self) -> Result<(), &'static str> {
+        if !matches!(self.ledger.state, MatchState::Assigned | MatchState::Ready) || self.world.state != MatchState::Ready { return Err("invalid_match_state"); }
+        self.ledger.state = MatchState::Cancelled;
+        self.world.state = MatchState::Cancelled;
+        self.world_events.push(RecordedWorldEvent { tick: self.world.tick, event: WorldEvent::Cancelled { reason: "ready_timeout".into() } });
+        Ok(())
+    }
     /// Start only after readiness; callers persist before acknowledging the start.
     pub fn start(&mut self, now_ms: u64) -> Result<(), &'static str> {
         if self.world.state != MatchState::Ready || self.ledger.state != MatchState::Ready { return Err("match_not_ready"); }
@@ -175,6 +182,16 @@ mod tests {
         assert_eq!(game.mark_ready("b"), Ok(true));
         assert_eq!(game.start(0), Ok(()));
         assert_eq!(game.mark_ready("a"), Ok(true));
+    }
+    #[test] fn unready_match_cancels_without_starting_or_rating() {
+        let assignment = crate::matchmaking::Assignment { match_id:"m".into(), mode:tankwar_sim::competition::Mode::OneOnOne, first:vec!["a".into()], second:vec!["b".into()] };
+        let mut game = DurableMatch::from_assignment(&assignment).unwrap();
+        game.mark_ready("a").unwrap();
+        game.cancel_unready().unwrap();
+        assert_eq!(game.world.state, MatchState::Cancelled);
+        assert_eq!(game.ledger.state, MatchState::Cancelled);
+        assert_eq!(game.start(100), Err("match_not_ready"));
+        assert!(game.result().is_err());
     }
     #[test] fn scheduled_match_ticks_and_aborts_on_unrecoverable_gap() {
         let mut game = fixture(); game.world.state = MatchState::Ready; game.ledger.state = MatchState::Ready;

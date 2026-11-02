@@ -138,6 +138,7 @@ impl DurableObject for MatchActor {
             } else {
                 storage.put("match", game).await?;
             }
+            if storage.get_alarm().await?.is_none() { storage.set_alarm(60_000_i64).await?; }
             return Response::from_json(&serde_json::json!({"match_id": assignment.match_id}));
         }
         if req.path() == "/spectate" {
@@ -209,6 +210,10 @@ impl DurableObject for MatchActor {
         let _guard = self.lock.lock().await;
         let storage = self.state.storage();
         let Some(mut game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::empty(); };
+        if matches!(game.ledger.state, tankwar_protocol::MatchState::Assigned | tankwar_protocol::MatchState::Ready) && game.world.state == tankwar_protocol::MatchState::Ready {
+            game.cancel_unready().map_err(|e| Error::RustError(e.into()))?;
+            storage.put("match", &game).await?;
+        }
         if game.world.state == tankwar_protocol::MatchState::Running {
             if !self.loop_active.get() {
                 let now = Date::now().as_millis();
