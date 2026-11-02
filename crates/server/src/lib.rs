@@ -205,6 +205,7 @@ impl DurableObject for MatchActor {
             return Response::from_json(&serde_json::json!({"all_ready": all_ready, "running": running}));
         }
         if req.path() == "/start" {
+            if let Err(reason) = ranked_admission() { return Response::error(reason, 503); }
             let _guard = self.lock.lock().await;
             let storage = self.state.storage();
             let Some(mut game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::error("match not found", 404); };
