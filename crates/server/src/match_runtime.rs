@@ -44,7 +44,10 @@ impl DurableMatch {
         Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false, archived_world_events: 0, finished: None, ranked: true, autonomous_crews: false })
     }
     pub fn village(now_ms: u64) -> Result<Self, &'static str> {
-        let assignment = crate::matchmaking::Assignment { match_id:"village".into(), mode:tankwar_sim::competition::Mode::OneOnOne, first:vec!["crew-west".into()], second:vec!["crew-east".into()] };
+        Self::village_named("village", now_ms)
+    }
+    pub fn village_named(match_id: &str, now_ms: u64) -> Result<Self, &'static str> {
+        let assignment = crate::matchmaking::Assignment { match_id:match_id.into(), mode:tankwar_sim::competition::Mode::OneOnOne, first:vec!["crew-west".into()], second:vec!["crew-east".into()] };
         let mut game = Self::from_assignment(&assignment)?;
         game.ranked = false; game.autonomous_crews = true; game.queue_released = true;
         game.mark_ready("crew-west")?; game.mark_ready("crew-east")?; game.start(now_ms)?;

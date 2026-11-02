@@ -32,8 +32,6 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return Ok(response);
     }
     if path == "/v1/matches" && req.method() == Method::Get {
-        let response = forward(&env, "MATCHES", "village", "/initialize-village", serde_json::json!({})).await?;
-        if response.status_code() != 200 { return Response::error("village unavailable", 503); }
         return forward(&env, "QUEUES", "global", "/directory", serde_json::json!({})).await;
     }
     if path == "/v1/leaderboard" && req.method() == Method::Get {
@@ -117,6 +115,7 @@ pub mod archive;
 pub mod ledger;
 pub mod match_runtime;
 pub mod matchmaking;
+pub mod village;
 
 // Ranked admission stays closed until the release asset inventory and rights
 // review are complete. Opening it requires an explicit code change and review.
@@ -208,16 +207,22 @@ impl DurableObject for MatchActor {
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         if req.method() != Method::Post { return Response::error("not found", 404); }
         if req.path() == "/initialize-village" {
+            #[derive(serde::Deserialize)] struct Input { match_id: String }
+            let input: Input = req.json().await?;
             let _guard = self.lock.lock().await;
             let storage = self.state.storage();
-            if storage.get::<match_runtime::DurableMatch>("match").await?.is_none() {
-                let mut game = match_runtime::DurableMatch::village(Date::now().as_millis()).map_err(|e| Error::RustError(e.into()))?;
+            let game = if let Some(game) = storage.get::<match_runtime::DurableMatch>("match").await? {
+                if game.ledger.match_id != input.match_id || game.ranked { return Response::error("match conflict", 409); }
+                game
+            } else {
+                let mut game = match_runtime::DurableMatch::village_named(&input.match_id, Date::now().as_millis()).map_err(|e| Error::RustError(e.into()))?;
                 let initial = game.world.spectator_snapshot(&game.ledger.match_id, game.ledger.version);
                 persist_match_and_frames(&storage, &mut game, vec![initial]).await?;
                 storage.set_alarm(2000_i64).await?;
                 self.start_loop();
-            }
-            return Response::from_json(&serde_json::json!({"match_id":"village"}));
+                game
+            };
+            return Response::from_json(&serde_json::json!({"match_id":game.ledger.match_id,"state":game.world.state}));
         }
         if req.path() == "/initialize" {
             let assignment: matchmaking::Assignment = req.json().await?;
@@ -442,9 +447,23 @@ impl DurableObject for QueueActor {
         if req.method() != Method::Post { return Response::error("not found", 404); }
         if req.path() == "/directory" {
             let _guard = self.lock.lock().await;
-            let queue: matchmaking::Queue = self.state.storage().get("queue").await?.unwrap_or_default();
+            let storage = self.state.storage();
+            let queue: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
+            let mut villages: village::Directory = storage.get("villages").await?.unwrap_or_default();
+            let active = villages.active().to_owned();
+            let mut response = forward(&self.env, "MATCHES", &active, "/initialize-village", serde_json::json!({"match_id":active})).await?;
+            if response.status_code() != 200 { return Response::error("village unavailable", 503); }
+            #[derive(serde::Deserialize)] struct Status { state: tankwar_protocol::MatchState }
+            let status: Status = response.json().await?;
+            if villages.advance_if_terminal(status.state).map_err(|e| Error::RustError(e.into()))? {
+                // Persist the allocation before starting it; retries resume this same match.
+                storage.put("villages", &villages).await?;
+                let active = villages.active();
+                let response = forward(&self.env, "MATCHES", active, "/initialize-village", serde_json::json!({"match_id":active})).await?;
+                if response.status_code() != 200 { return Response::error("village unavailable", 503); }
+            }
             let mut matches = queue.matches().clone();
-            matches.insert("village".into(), tankwar_sim::competition::Mode::OneOnOne);
+            for id in villages.ids() { matches.insert(id.clone(), tankwar_sim::competition::Mode::OneOnOne); }
             return Response::from_json(&matches);
         }
         if req.path() == "/leave" {
