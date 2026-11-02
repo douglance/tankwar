@@ -44,7 +44,11 @@ impl Tank {
         }
         if self.drive_expires_at.is_some_and(|expiry| tick >= expiry) { self.neutralize(); }
         if self.engine_running {
-            self.fuel_ml = self.fuel_ml.saturating_sub(self.idle_fuel_ml_per_tick);
+            // Placeholder load model: full drive or steering adds one idle-rate
+            // equivalent. Actual fuel curves depend on the sourced vehicle.
+            let load = self.throttle.unsigned_abs().max(self.steering.unsigned_abs()) as u64;
+            let extra = self.idle_fuel_ml_per_tick.saturating_mul(load).div_ceil(1000);
+            self.fuel_ml = self.fuel_ml.saturating_sub(self.idle_fuel_ml_per_tick.saturating_add(extra));
             if self.fuel_ml == 0 { self.engine_running = false; self.neutralize(); }
         }
     }
@@ -69,7 +73,16 @@ mod tests {
     use super::*;
     fn tank() -> Tank { Tank { fuel_ml: 2, idle_fuel_ml_per_tick: 1, engine_running: true, ammunition: BTreeMap::from([("ap".into(), 1)]), chamber: None, reload_ticks: 2, loading: None, throttle: 0, steering: 0, drive_expires_at: None } }
     #[test] fn resources_are_conserved() { let mut t = tank(); t.load("ap").unwrap(); assert_eq!(t.ammunition["ap"], 0); assert!(t.load("ap").is_err()); assert!(t.fire().is_err()); t.step(1); assert!(t.fire().is_err()); t.step(2); assert_eq!(t.fire().unwrap(), "ap"); assert!(t.fire().is_err()); t.step(1); t.step(2); assert_eq!(t.fuel_ml, 0); assert!(!t.engine_running); }
-    #[test] fn orders_expire() { let mut t = tank(); t.drive(10, 500, -100, 2).unwrap(); t.step(11); assert_eq!(t.throttle, 500); t.step(12); assert_eq!(t.throttle, 0); }
+    #[test] fn orders_expire() { let mut t = tank(); t.fuel_ml = 10; t.drive(10, 500, -100, 2).unwrap(); t.step(11); assert_eq!(t.throttle, 500); t.step(12); assert_eq!(t.throttle, 0); }
+    #[test] fn engine_load_consumes_additional_fuel_and_cannot_underflow() {
+        let mut idle = tank(); idle.fuel_ml = 10;
+        let mut driving = idle.clone(); driving.drive(0, 1000, 0, 5).unwrap();
+        let mut steering = idle.clone(); steering.drive(0, 0, -1000, 5).unwrap();
+        idle.step(1); driving.step(1); steering.step(1);
+        assert_eq!((idle.fuel_ml, driving.fuel_ml, steering.fuel_ml), (9, 8, 8));
+        driving.fuel_ml = 1; driving.step(2);
+        assert_eq!(driving.fuel_ml, 0); assert!(!driving.engine_running); assert_eq!(driving.throttle, 0);
+    }
     #[test] fn elo_reference() { assert_eq!(updated_rating(1500.0, 1500.0, 1.0), 1516.0); assert_eq!(updated_rating(1500.0, 1500.0, 0.5), 1500.0); assert_eq!(team_mean(&[1400.0, 1600.0]), 1500.0); }
     #[test] fn timeout_at_18000_ticks() { let mut m = Match { state: MatchState::Running, tick: MATCH_TICKS - 1, tanks: vec![] }; m.step(); assert_eq!(m.state, MatchState::Finished); }
 }
