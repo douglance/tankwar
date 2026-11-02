@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 
 #[test]
@@ -77,6 +77,61 @@ fn direct_crew_commands_forward_typed_orders() {
         socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
         assert!(child.wait().unwrap().success());
     }
+}
+
+#[test]
+fn mcp_drive_forwards_signed_values_and_credentials() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (mut socket, _) = loop {
+            match listener.accept() {
+                Ok(socket) => break socket,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => thread::sleep(std::time::Duration::from_millis(10)),
+                Err(e) => panic!("MCP did not forward: {e}"),
+            }
+        };
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut bytes = Vec::new();
+        let end = loop {
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).unwrap(); assert!(n > 0);
+            bytes.extend_from_slice(&buf[..n]);
+            if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { break i + 4; }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..end]);
+        assert!(headers.starts_with("POST /v1/matches/match-1/commands HTTP/1.1\r\n"));
+        assert!(headers.lines().any(|l| l.eq_ignore_ascii_case("cf-access-client-id: test-client.access")));
+        assert!(headers.lines().any(|l| l.eq_ignore_ascii_case("cf-access-client-secret: test-secret")));
+        let length: usize = headers.lines().find_map(|line| { let (k,v) = line.split_once(':')?; k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse().unwrap()) }).unwrap();
+        while bytes.len() < end + length { let mut buf=[0;1024]; let n=socket.read(&mut buf).unwrap(); assert!(n>0); bytes.extend_from_slice(&buf[..n]); }
+        let body: serde_json::Value = serde_json::from_slice(&bytes[end..end+length]).unwrap();
+        assert_eq!(body["id"], "mcp-1");
+        assert_eq!(body["order"], serde_json::json!({"kind":"drive","throttle":-500,"steering":-100,"ttl_ticks":20}));
+        socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tankwar"))
+        .env("TANKWAR_URL", format!("http://{address}"))
+        .env("TANKWAR_ACCESS_CLIENT_ID", "test-client.access")
+        .env("TANKWAR_ACCESS_CLIENT_SECRET", "test-secret")
+        .env_remove("TANKWAR_ACCESS_TOKEN")
+        .arg("--mcp").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    for message in [
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"call_write_tool","arguments":{"name":"drive","arguments":{"match_id":"match-1","seat_id":"seat-1","command_id":"mcp-1","throttle":-500,"steering":-100,"ttl_ticks":20}}}}),
+    ] { writeln!(input, "{message}").unwrap(); }
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    server.join().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let replies: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    let reply = replies.iter().find(|value| value["id"] == 2).expect("MCP response");
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("test-secret"));
 }
 
 fn verify_forwarding(access: bool) {
