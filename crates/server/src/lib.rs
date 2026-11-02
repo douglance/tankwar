@@ -91,6 +91,20 @@ pub mod ledger;
 pub mod match_runtime;
 pub mod matchmaking;
 
+// Ranked admission stays closed until the release asset inventory and rights
+// review are complete. Opening it requires an explicit code change and review.
+fn ranked_admission() -> std::result::Result<(), &'static str> {
+    Err("ranked play is unavailable while the asset gate is open")
+}
+
+#[cfg(test)]
+mod release_gate_tests {
+    #[test]
+    fn ranked_admission_is_closed_until_assets_are_reviewed() {
+        assert!(super::ranked_admission().is_err());
+    }
+}
+
 /// Internal match actor. Only the gateway supplies its verified agent identity.
 #[durable_object]
 pub struct MatchActor {
@@ -171,6 +185,7 @@ impl DurableObject for MatchActor {
             };
         }
         if req.path() == "/ready" {
+            if let Err(reason) = ranked_admission() { return Response::error(reason, 503); }
             #[derive(serde::Deserialize)]
             struct Ready { agent_id: String }
             let input: Ready = req.json().await?;
@@ -350,6 +365,7 @@ impl DurableObject for QueueActor {
             return Response::empty();
         }
         if req.path() != "/join" { return Response::error("not found", 404); }
+        if let Err(reason) = ranked_admission() { return Response::error(reason, 503); }
         let input: InternalQueueRequest = req.json().await?;
         let _guard = self.lock.lock().await;
         let storage = self.state.storage();
