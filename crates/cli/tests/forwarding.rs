@@ -65,6 +65,7 @@ fn direct_crew_commands_forward_typed_orders() {
                 Err(e) => panic!("CLI did not connect for {:?}: {e}", args),
             }
         };
+        socket.set_nonblocking(false).unwrap();
         socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         let mut bytes=Vec::new();
         let header_end = loop { let mut b=[0;1024]; let n=socket.read(&mut b).unwrap(); assert!(n>0); bytes.extend_from_slice(&b[..n]); if let Some(i)=bytes.windows(4).position(|w|w==b"\r\n\r\n") { break i+4; } };
@@ -93,6 +94,7 @@ fn mcp_drive_forwards_signed_values_and_credentials() {
                 Err(e) => panic!("MCP did not forward: {e}"),
             }
         };
+        socket.set_nonblocking(false).unwrap();
         socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         let mut bytes = Vec::new();
         let end = loop {
