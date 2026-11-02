@@ -15,6 +15,16 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return Response::from_json(&serde_json::json!({"service":"tankwar","status":"initializing","matches_available":false}));
     }
     let path = req.path();
+    if path == "/tankwar-viewer_bg.wasm" && req.method() == Method::Get {
+        let Some(object) = env.bucket("VIEWER")?.get("tankwar-viewer_bg.wasm").await? else {
+            return Response::error("spectator wasm missing", 404);
+        };
+        let Some(body) = object.body() else { return Response::error("spectator wasm missing", 404); };
+        let mut response = Response::from_body(body.response_body()?)?;
+        response.headers_mut().set("content-type", "application/wasm")?;
+        response.headers_mut().set("cache-control", "public, max-age=300")?;
+        return Ok(response);
+    }
     if path == "/v1/matches" && req.method() == Method::Get {
         return forward(&env, "QUEUES", "global", "/directory", serde_json::json!({})).await;
     }
@@ -346,7 +356,11 @@ impl DurableObject for QueueActor {
         let mut queue: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
         match queue.join(&input.agent_id, input.mode) {
             Ok(assignment) => {
-                storage.put("queue", queue).await?;
+                // Schedule recovery before recording an assignment, so a failed actor
+                // call or interrupted response cannot strand its participants.
+                if assignment.is_some() { storage.set_alarm(2000_i64).await?; }
+                storage.put("queue", &queue).await?;
+                drop(_guard);
                 if let Some(ref assigned) = assignment {
                     let actor = self.env.durable_object("MATCHES")?.id_from_name(&assigned.match_id)?.get_stub()?;
                     let payload = serde_json::to_string(assigned)?;
@@ -354,10 +368,36 @@ impl DurableObject for QueueActor {
                     init.with_method(Method::Post).with_body(Some(worker::wasm_bindgen::JsValue::from_str(&payload)));
                     let response = actor.fetch_with_request(Request::new_with_init("https://match.internal/initialize", &init)?).await?;
                     if response.status_code() != 200 { return Response::error("match initialization failed", 503); }
+                    let _guard = self.lock.lock().await;
+                    let mut latest: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
+                    latest.initialized(&assigned.match_id);
+                    storage.put("queue", &latest).await?;
                 }
                 Response::from_json(&assignment)
             }
             Err(reason) => Response::error(reason, 409),
         }
+    }
+
+    async fn alarm(&self) -> Result<Response> {
+        let storage = self.state.storage();
+        let pending = {
+            let _guard = self.lock.lock().await;
+            let queue: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
+            queue.pending_initializations()
+        };
+        for assignment in pending {
+            let result = forward(&self.env, "MATCHES", &assignment.match_id, "/initialize", serde_json::to_value(&assignment)?).await;
+            if matches!(result, Ok(ref response) if response.status_code() == 200) {
+                let _guard = self.lock.lock().await;
+                let mut queue: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
+                queue.initialized(&assignment.match_id);
+                storage.put("queue", &queue).await?;
+            }
+        }
+        let _guard = self.lock.lock().await;
+        let queue: matchmaking::Queue = storage.get("queue").await?.unwrap_or_default();
+        if !queue.pending_initializations().is_empty() { storage.set_alarm(2000_i64).await?; }
+        Response::empty()
     }
 }

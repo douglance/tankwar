@@ -1,5 +1,5 @@
 //! Deterministic queue state. Persistence and authorization belong to its owner.
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use tankwar_sim::competition::Mode;
 
@@ -12,6 +12,7 @@ pub struct Queue {
     assignments: BTreeMap<String, Assignment>,
     next_match: u64,
     #[serde(default)] matches: BTreeMap<String, Mode>,
+    #[serde(default)] pending_initializations: BTreeSet<String>,
 }
 impl Queue {
     pub fn join(&mut self, agent: &str, mode: Mode) -> Result<Option<Assignment>, &'static str> {
@@ -31,14 +32,20 @@ impl Queue {
         let assignment = Assignment { match_id: format!("match-{next}"), mode, first: participants[..half].to_vec(), second: participants[half..].to_vec() };
         for agent in participants { self.assignments.insert(agent, assignment.clone()); }
         self.matches.insert(assignment.match_id.clone(), mode);
+        self.pending_initializations.insert(assignment.match_id.clone());
         self.next_match = next;
         Ok(Some(assignment))
     }
     pub fn matches(&self) -> &BTreeMap<String, Mode> { &self.matches }
+    pub fn pending_initializations(&self) -> Vec<Assignment> {
+        self.pending_initializations.iter().filter_map(|id| self.assignments.values().find(|a| &a.match_id == id).cloned()).collect()
+    }
+    pub fn initialized(&mut self, match_id: &str) { self.pending_initializations.remove(match_id); }
     pub fn assignment(&self, agent: &str) -> Option<&Assignment> { self.assignments.get(agent) }
     /// Called only after the match owner has made the assignment terminal.
     pub fn release(&mut self, match_id: &str) {
         self.assignments.retain(|_, assignment| assignment.match_id != match_id);
+        self.pending_initializations.remove(match_id);
     }
     pub fn leave(&mut self, agent: &str) -> bool {
         let before = self.one.len() + self.two.len();
@@ -65,6 +72,18 @@ mod tests {
         let mut restored = restored; restored.release(&m.match_id);
         assert_eq!(restored.matches().get(&m.match_id), Some(&Mode::OneOnOne));
         assert!(restored.join("a", Mode::OneOnOne).unwrap().is_none());
+    }
+    #[test] fn pending_initialization_survives_restart_and_clears_only_after_acknowledgement() {
+        let mut q = Queue::default();
+        q.join("a", Mode::OneOnOne).unwrap();
+        let assignment = q.join("b", Mode::OneOnOne).unwrap().unwrap();
+        let mut restored: Queue = serde_json::from_slice(&serde_json::to_vec(&q).unwrap()).unwrap();
+        assert_eq!(restored.pending_initializations(), vec![assignment.clone()]);
+        assert_eq!(restored.join("a", Mode::OneOnOne).unwrap(), Some(assignment.clone()));
+        restored.initialized(&assignment.match_id);
+        assert!(restored.pending_initializations().is_empty());
+        restored.release(&assignment.match_id);
+        assert!(restored.assignment("a").is_none());
     }
     #[test] fn forms_two_sides_of_two_and_cancels_waiting_ticket() {
         let mut q=Queue::default();
