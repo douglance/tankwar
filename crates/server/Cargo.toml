@@ -1,0 +1,22 @@
+[package]
+name = "tankwar-server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = "=0.8.5"
+worker-sys = "=0.8.5"
+worker-macros = "=0.8.5"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+tankwar-protocol = { path = "../protocol" }
+futures = "0.3"
+tankwar-sim = { path = "../sim" }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

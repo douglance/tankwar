@@ -1,0 +1,19 @@
+[package]
+name = "tankwar-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "tankwar"
+path = "src/main.rs"
+
+[dependencies]
+incurs = "0.8"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+tankwar-protocol = { path = "../protocol" }

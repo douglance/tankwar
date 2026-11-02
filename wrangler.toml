@@ -1,0 +1,35 @@
+name = "tankwar"
+account_id = "88f9cbf5c4f4e217079bcbf0ca6cb181"
+main = "crates/server/build/worker/shim.mjs"
+compatibility_date = "2026-11-01"
+
+[build]
+command = "cd crates/server && worker-build --release"
+
+[assets]
+directory = "dist/viewer"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "MATCHES"
+class_name = "MatchActor"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MatchActor"]
+
+[[durable_objects.bindings]]
+name = "LADDERS"
+class_name = "LadderActor"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["LadderActor"]
+
+[[durable_objects.bindings]]
+name = "QUEUES"
+class_name = "QueueActor"
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["QueueActor"]

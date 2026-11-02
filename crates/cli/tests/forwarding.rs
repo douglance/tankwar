@@ -1,0 +1,48 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::process::Command;
+use std::thread;
+
+#[test]
+fn cli_forwards_command_with_bearer_and_reports_acceptance() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut bytes = Vec::new();
+        let header_end;
+        loop {
+            let mut buffer = [0; 1024];
+            let count = socket.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { header_end = end + 4; break; }
+        }
+        let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+        let length: usize = headers.lines().find_map(|line| {
+            let (name,value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+        }).unwrap();
+        while bytes.len() < header_end + length {
+            let mut buffer = [0; 1024];
+            let count = socket.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        assert!(headers.starts_with("POST /v1/matches/match-1/commands HTTP/1.1\r\n"));
+        assert!(headers.lines().any(|l| l.eq_ignore_ascii_case("authorization: Bearer test-secret")));
+        let body: serde_json::Value = serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
+        assert_eq!(body["id"], "cmd-1");
+        assert_eq!(body["order"]["kind"], "fire");
+        socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_tankwar"))
+        .env("TANKWAR_URL", format!("http://{address}"))
+        .env("TANKWAR_ACCESS_TOKEN", "test-secret")
+        .args(["order", r#"{"protocol_version":1,"id":"cmd-1","match_id":"match-1","seat_id":"seat-1","expected_version":null,"order":{"kind":"fire"}}"#])
+        .output().unwrap();
+    server.join().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("test-secret"));
+}
