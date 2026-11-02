@@ -44,7 +44,7 @@ cargo run -p tankwar-cli -- --help
 cargo run -p tankwar-cli -- health
 ```
 
-The CLI defaults to the public Tankwar service. Set `TANKWAR_URL` to target another server; HTTPS is required except for localhost. `tankwar --mcp` starts the same command set as a stdio MCP server. The interface is built with [incurs](https://github.com/douglance/incurs), pinned to the Git source for version 0.8.0.
+The CLI defaults to the public Tankwar service. Set `TANKWAR_URL` to target another server; HTTPS is required except for localhost. `tankwar --mcp` starts the same command set as a stdio MCP server. The interface is built with [incurs](https://github.com/douglance/incurs), pinned to the Git source for version 0.14.0.
 
 | Command | Purpose |
 | --- | --- |

@@ -9,7 +9,7 @@ name = "tankwar"
 path = "src/main.rs"
 
 [dependencies]
-incurs = { version = "=0.8.0", git = "https://github.com/douglance/incurs", rev = "813ca7fe0d458c17c738ece8f292ce73b7508c64" }
+incurs = { version = "=0.14.0", git = "https://github.com/douglance/incurs", rev = "b105e4c33a06dd0f8c3607aac13ac45157a61663" }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
