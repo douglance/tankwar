@@ -350,13 +350,14 @@ impl DurableObject for MatchActor {
         }
         if matches!(game.world.state, tankwar_protocol::MatchState::Finished | tankwar_protocol::MatchState::Aborted | tankwar_protocol::MatchState::Cancelled) {
             if game.world.state == tankwar_protocol::MatchState::Finished && !game.rating_published {
-                if !game.ranked { game.rating_published = true; storage.put("match", &game).await?; }
-            }
-            if game.world.state == tankwar_protocol::MatchState::Finished && !game.rating_published {
-                let (mode, first, second, outcome) = game.result().map_err(|e| Error::RustError(e.into()))?;
-                let payload = serde_json::json!({"season":"season-1", "match_id":game.ledger.match_id, "mode":mode, "first":first, "second":second, "outcome":outcome});
-                if let Ok(response) = forward(&self.env, "LADDERS", "season-1", "/result", payload).await {
-                    if response.status_code() == 200 { game.rating_published = true; storage.put("match", &game).await?; }
+                match game.rating_result().map_err(|e| Error::RustError(e.into()))? {
+                    None => { game.rating_published = true; storage.put("match", &game).await?; }
+                    Some((mode, first, second, outcome)) => {
+                        let payload = serde_json::json!({"season":"season-1", "match_id":game.ledger.match_id, "mode":mode, "first":first, "second":second, "outcome":outcome});
+                        if let Ok(response) = forward(&self.env, "LADDERS", "season-1", "/result", payload).await {
+                            if response.status_code() == 200 { game.rating_published = true; storage.put("match", &game).await?; }
+                        }
+                    }
                 }
             }
             if !game.queue_released {

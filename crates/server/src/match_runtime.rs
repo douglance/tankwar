@@ -146,10 +146,14 @@ impl DurableMatch {
     }
     /// Apply a finished match to a season's rating state; the owner must persist it atomically.
     pub fn rate_finished(&self, ratings: &mut tankwar_sim::competition::Ratings, _mode: tankwar_sim::competition::Mode) -> Result<Vec<tankwar_sim::competition::RatingChange>, &'static str> {
-        if !self.ranked { return Err("unranked_match"); }
-        let (mode, first, second, outcome) = self.result()?;
+        let (mode, first, second, outcome) = self.rating_result()?.ok_or("unranked_match")?;
         if mode != _mode { return Err("invalid_mode"); }
         ratings.apply(&self.ledger.match_id, mode, &first, &second, outcome)
+    }
+    /// The outbox and local rating path share the same ranked admission decision.
+    pub fn rating_result(&self) -> Result<Option<(tankwar_sim::competition::Mode, Vec<String>, Vec<String>, tankwar_sim::competition::Outcome)>, &'static str> {
+        if !self.ranked { return Ok(None); }
+        self.result().map(Some)
     }
     pub fn result(&self) -> Result<(tankwar_sim::competition::Mode, Vec<String>, Vec<String>, tankwar_sim::competition::Outcome), &'static str> {
         use tankwar_sim::competition::{Mode, Outcome};
@@ -258,6 +262,7 @@ mod tests {
         let before=ratings.leaderboard(Mode::OneOnOne);
         assert_eq!(before.len(),2); assert_eq!(before[0].agent_id,"alice"); assert_eq!(before[0].rating,1516.); assert_eq!(before[0].games,1);
         let mut village=DurableMatch::village(0).unwrap(); village.finished=Some(Finished { winner:Some(0) });
+        assert_eq!(village.rating_result().unwrap(), None);
         assert_eq!(village.rate_finished(&mut ratings, Mode::OneOnOne),Err("unranked_match"));
         assert_eq!(ratings.leaderboard(Mode::OneOnOne),before);
     }
