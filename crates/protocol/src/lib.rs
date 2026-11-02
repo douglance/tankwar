@@ -68,6 +68,14 @@ pub struct Snapshot {
     pub tick: u64,
     pub sequence: u64,
     pub tanks: Vec<TankSnapshot>,
+    #[serde(default)] pub structures: Vec<StructureSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StructureSnapshot {
+    pub id: String,
+    pub integrity: u32,
+    pub destroyed: bool,
 }
 
 /// Approximate, hull-fixed forward sight report; no hidden vehicle identifiers.

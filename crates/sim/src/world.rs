@@ -35,15 +35,21 @@ pub enum WorldEvent {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pending { pub id: String, pub seat: String, pub order: Order }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Structure { pub id: String, pub bounds: Bounds, pub integrity: u32 }
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct World {
     pub state: MatchState,
     pub tick: u64,
     pub vehicles: BTreeMap<String, Vehicle>,
     pub obstacles: Vec<Bounds>,
+    #[serde(default)]
+    pub structures: Vec<Structure>,
+    #[serde(default)]
+    pub playable_bounds: Option<Bounds>,
     pending: VecDeque<Pending>,
 }
 impl World {
-    pub fn new(vehicles: BTreeMap<String, Vehicle>, obstacles: Vec<Bounds>) -> Self { Self { state: MatchState::Ready, tick: 0, vehicles, obstacles, pending: VecDeque::new() } }
+    pub fn new(vehicles: BTreeMap<String, Vehicle>, obstacles: Vec<Bounds>) -> Self { Self { state: MatchState::Ready, tick: 0, vehicles, obstacles, structures: Vec::new(), playable_bounds: None, pending: VecDeque::new() } }
     /// Placeholder hull-fixed sight. Cone, range and precision are unsourced approximations.
     pub fn look(&self, match_id: &str, seat: &str) -> Result<tankwar_protocol::SightReport, &'static str> {
         use tankwar_protocol::{SightContact, SightReport, PROTOCOL_VERSION};
@@ -56,6 +62,7 @@ impl World {
         for (id, target) in &self.vehicles {
             if id == seat { continue; }
             let mut occluders = self.obstacles.clone();
+            occluders.extend(self.structures.iter().filter(|s| s.integrity > 0).map(|s| s.bounds));
             occluders.extend(self.vehicles.iter().filter(|(other, _)| *other != seat && *other != id).map(|(_, v)| v.bounds()));
             if !camera.sees_point(target.position, &occluders) { continue; }
             let dx = target.position.x - observer.position.x;
@@ -77,7 +84,7 @@ impl World {
                 loaded_round: v.tank.chamber.clone(), x_m: Some(v.position.x), y_m: Some(v.position.y),
                 heading_rad: Some(v.heading_radians), team: Some(v.team),
                 reload_ticks_remaining: v.tank.loading.as_ref().map(|(_, ticks)| *ticks), knocked_out: Some(v.hit_points == 0),
-            }).collect() }
+            }).collect(), structures: self.structures.iter().map(|s| tankwar_protocol::StructureSnapshot { id: s.id.clone(), integrity: s.integrity, destroyed: s.integrity == 0 }).collect() }
     }
     pub fn enqueue(&mut self, order: Pending) -> Result<(), &'static str> {
         if self.state != MatchState::Running { return Err("match_not_running"); }
@@ -122,11 +129,12 @@ impl World {
             let start = vehicle.position;
             let end = Vec3 { x: start.x + vehicle.heading_radians.cos() * distance, y: start.y + vehicle.heading_radians.sin() * distance, z: start.z };
             let radius = vehicle.half_extent_metres;
-            let blocked = self.obstacles.iter().chain(others.iter()).any(|b| {
+            let blocked = self.obstacles.iter().chain(self.structures.iter().filter(|s| s.integrity > 0).map(|s| &s.bounds)).chain(others.iter()).any(|b| {
                 let expanded = Bounds { min: Vec3 { x:b.min.x-radius, y:b.min.y-radius, z:b.min.z-radius }, max: Vec3 { x:b.max.x+radius, y:b.max.y+radius, z:b.max.z+radius } };
                 expanded.intersection(start,end).is_some()
             });
-            if !blocked { vehicle.position = end; }
+            let outside = self.playable_bounds.as_ref().is_some_and(|b| end.x - radius < b.min.x || end.x + radius > b.max.x || end.y - radius < b.min.y || end.y + radius > b.max.y);
+            if !blocked && !outside { vehicle.position = end; }
         }
         let teams: std::collections::BTreeSet<_> = self.vehicles.values().filter(|v| v.hit_points > 0).map(|v| v.team).collect();
         if teams.len() <= 1 || self.tick >= MATCH_TICKS {
@@ -140,9 +148,13 @@ impl World {
         // Instantaneous 2 km ray and one hit point damage are approximations.
         let end = Vec3 { x:start.x + gun.heading_radians.cos()*2000., y:start.y + gun.heading_radians.sin()*2000., z:start.z };
         let targets: Vec<_> = self.vehicles.iter().filter(|(seat,v)| seat.as_str()!=shooter && v.hit_points>0).map(|(seat,v)| (seat.clone(),v.bounds())).collect();
-        let mut bounds = self.obstacles.clone(); bounds.extend(targets.iter().map(|(_,b)| *b));
+        let structures: Vec<_> = self.structures.iter().enumerate().filter(|(_,s)| s.integrity > 0).map(|(i,s)| (i,s.bounds)).collect();
+        let mut bounds = self.obstacles.clone(); bounds.extend(structures.iter().map(|(_,b)| *b)); bounds.extend(targets.iter().map(|(_,b)| *b));
         if let Some((index,_)) = first_contact(start,end,&bounds) {
-            let target = index.checked_sub(self.obstacles.len()).map(|i| targets[i].0.clone());
+            if let Some((structure, _)) = index.checked_sub(self.obstacles.len()).and_then(|i| structures.get(i)) {
+                self.structures[*structure].integrity -= 1;
+            }
+            let target = index.checked_sub(self.obstacles.len() + structures.len()).map(|i| targets[i].0.clone());
             if let Some(seat) = &target {
                 let v = self.vehicles.get_mut(seat).expect("target exists"); v.hit_points = v.hit_points.saturating_sub(1);
                 if v.hit_points == 0 { events.push(WorldEvent::Destroyed { seat: seat.clone() }); }
@@ -209,6 +221,21 @@ mod tests {
         let wall=Bounds{min:Vec3{x:4.,y:-2.,z:-2.},max:Vec3{x:5.,y:2.,z:2.}};
         let mut w=world(vec![wall]); w.enqueue(Pending{id:"fire".into(),seat:"a".into(),order:Order::Fire}).unwrap();
         let e=w.step(); assert!(e.contains(&WorldEvent::Impact{target:None})); assert_eq!(w.vehicles["b"].hit_points,1); assert_eq!(w.state,MatchState::Running);
+    }
+    #[test] fn home_stops_each_shot_until_destroyed_then_next_shot_passes() {
+        let mut w = world(vec![]);
+        w.structures.push(Structure { id:"home".into(), bounds:Bounds { min:Vec3{x:4.,y:-2.,z:-2.}, max:Vec3{x:5.,y:2.,z:2.} }, integrity:3 });
+        for remaining in (0..3).rev() {
+            w.vehicles.get_mut("a").unwrap().tank.chamber = Some("ap".into());
+            w.enqueue(Pending { id:format!("shot-{remaining}"), seat:"a".into(), order:Order::Fire }).unwrap();
+            w.step();
+            assert_eq!(w.structures[0].integrity, remaining);
+            assert_eq!(w.vehicles["b"].hit_points, 1);
+            assert_eq!(w.spectator_snapshot("m",0).structures[0].destroyed, remaining == 0);
+        }
+        w.vehicles.get_mut("a").unwrap().tank.chamber = Some("ap".into());
+        w.enqueue(Pending { id:"last".into(), seat:"a".into(), order:Order::Fire }).unwrap();
+        assert!(w.step().contains(&WorldEvent::Destroyed { seat:"b".into() }));
     }
     #[test] fn movement_stops_at_cover_and_state_round_trips() {
         let wall=Bounds{min:Vec3{x:1.4,y:-2.,z:-2.},max:Vec3{x:2.,y:2.,z:2.}};

@@ -45,3 +45,26 @@ The prototype uses `season-1`, independent 1v1 and 2v2 Elo ratings initialized a
 `GET /v1/matches` lists known match IDs and modes; state is available from each spectator feed. The prototype directory is not paginated. `GET /v1/matches/{match_id}/spectate` exposes a public current spectator snapshot, the durably accepted command events, and world events recorded so far. It includes enemy state by design. This draft endpoint is not a seekable replay: historical snapshots, immutable recording segments, pagination and reconnect cursors are not implemented.
 
 `POST /v1/matches/{match_id}/look` requires `match:observe` and an assigned live tank; the CLI and stdio MCP expose `look match_id`. It returns `{protocol_version, match_id, tick, station, contacts:[{bearing_degrees, approximate_range_metres}]}`. The prototype hull-fixed sight uses an unsourced 60-degree cone, 1 km range, 5-degree bearing and 50 m distance rounding; terrain and other tanks occlude target centers. Contacts contain no seat IDs, team, health, fuel, or ammunition. This is an approximate text report, not a rendered view or a researched vehicle sight; some partially visible vehicles may be missed.
+
+## Lesmont shared geometry
+
+Simulation coordinates are meters: x east, y north. Viewer x is east and viewer z is south, so viewer z = -sim y. Playable ground is x = -240..240, y = -180..180. Primary spawns are west (-200, 0) and east (200, 40). Each rectangle below is (min x, min y, max x, max y). Homes start at integrity 3 and church c1 at 5; these hit points are unsourced placeholders. Intact structures block movement, sight and shots; each hit removes one integrity and stops that shot. At zero integrity the structure no longer blocks and spectator snapshots expose `structures` entries `{id, integrity, destroyed}`. Walls are permanent and have no integrity.
+
+| Kind | ID | Footprint |
+| --- | --- | --- |
+| Home | h1 | (-40, -70, -22, -50) |
+| Home | h2 | (16, -78, 36, -56) |
+| Home | h3 | (-90, -20, -70, 2) |
+| Home | h4 | (60, -16, 82, 6) |
+| Home | h5 | (-30, 24, -8, 46) |
+| Home | h6 | (20, 30, 42, 52) |
+| Home | h7 | (-150, 40, -126, 64) |
+| Home | h8 | (120, -60, 146, -36) |
+| Home | h9 | (-180, 80, -156, 104) |
+| Home | h10 | (160, 70, 184, 96) |
+| Home | h11 | (-70, 90, -48, 112) |
+| Home | h12 | (70, -110, 94, -86) |
+| Church | c1 | (-16, -130, 16, -96) |
+| Wall | w1 | (-220, -20, -160, -16) |
+| Wall | w2 | (150, 20, 220, 24) |
+| Wall | w3 | (-24, -150, -16, -132) |

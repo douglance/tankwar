@@ -7,7 +7,8 @@ use crate::ledger::{Decision, Ledger};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RecordedWorldEvent { pub tick: u64, pub event: WorldEvent }
 #[derive(Clone, Serialize, Deserialize)]
-pub struct DurableMatch { pub ledger: Ledger, pub world: World, pub world_events: Vec<RecordedWorldEvent>, pub clock: Option<tankwar_sim::clock::Clock>, pub ready_agents: std::collections::BTreeSet<String>, #[serde(default)] pub rating_published: bool, #[serde(default)] pub queue_released: bool, #[serde(default)] pub archived_world_events: u64, #[serde(default)] pub finished: Option<Finished> }
+pub struct DurableMatch { pub ledger: Ledger, pub world: World, pub world_events: Vec<RecordedWorldEvent>, pub clock: Option<tankwar_sim::clock::Clock>, pub ready_agents: std::collections::BTreeSet<String>, #[serde(default)] pub rating_published: bool, #[serde(default)] pub queue_released: bool, #[serde(default)] pub archived_world_events: u64, #[serde(default)] pub finished: Option<Finished>, #[serde(default = "ranked_default")] pub ranked: bool }
+fn ranked_default() -> bool { true }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Finished { pub winner: Option<u8> }
 impl DurableMatch {
@@ -29,16 +30,18 @@ impl DurableMatch {
                 let tank = Tank { fuel_ml: 100_000, idle_fuel_ml_per_tick: 1, engine_running: false,
                     ammunition: BTreeMap::from([("ap".into(), 20), ("he".into(), 10)]), chamber: None,
                     reload_ticks: 100, loading: None, throttle: 0, steering: 0, drive_expires_at: None };
-                let vehicle = Vehicle { tank, team, position: Vec3 { x: if team == 0 { -80. } else { 80. }, y: index as f64 * 10., z: 0. },
+                let vehicle = Vehicle { tank, team, position: Vec3 { x: if team == 0 { -200. } else { 200. }, y: (if team == 0 { 0. } else { 40. }) + index as f64 * 10., z: 0. },
                     heading_radians: if team == 0 { 0. } else { std::f64::consts::PI },
                     speed_metres_per_second: 8., turn_radians_per_second: 0.4, half_extent_metres: 2., hit_points: 1 };
                 vehicles.insert(seat_id.clone(), vehicle);
                 seats.push(Seat { agent_id: agent.clone(), seat_id });
             }
         }
-        let world = World::new(vehicles, vec![]);
+        let mut world = World::new(vehicles, tankwar_sim::lesmont::walls());
+        world.structures = tankwar_sim::lesmont::structures();
+        world.playable_bounds = Some(tankwar_sim::geometry::Bounds { min: Vec3 { x:-240., y:-180., z:-10. }, max: Vec3 { x:240., y:180., z:10. } });
         let ledger = Ledger::new(a.match_id.clone(), seats);
-        Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false, archived_world_events: 0, finished: None })
+        Ok(Self { ledger, world, world_events: Vec::new(), clock: None, ready_agents: BTreeSet::new(), rating_published: false, queue_released: false, archived_world_events: 0, finished: None, ranked: true })
     }
     pub fn mark_ready(&mut self, agent: &str) -> Result<bool, &'static str> {
         if !self.ledger.seats.iter().any(|seat| seat.agent_id == agent) { return Err("unauthorized_seat"); }
@@ -124,6 +127,7 @@ impl DurableMatch {
         let seat = self.ledger.seats.iter().find(|seat| seat.agent_id == agent).ok_or("unauthorized_seat")?;
         let mut snapshot = self.world.spectator_snapshot(&self.ledger.match_id, self.ledger.version);
         snapshot.tanks.retain(|tank| tank.seat_id == seat.seat_id);
+        snapshot.structures.clear();
         let tank = snapshot.tanks.first_mut().ok_or("unknown_seat")?;
         // Global position and opponent state are not instruments available to the crew.
         tank.x_m = None; tank.y_m = None; tank.heading_rad = None; tank.team = None;
@@ -135,6 +139,7 @@ impl DurableMatch {
     }
     /// Apply a finished match to a season's rating state; the owner must persist it atomically.
     pub fn rate_finished(&self, ratings: &mut tankwar_sim::competition::Ratings, _mode: tankwar_sim::competition::Mode) -> Result<Vec<tankwar_sim::competition::RatingChange>, &'static str> {
+        if !self.ranked { return Err("unranked_match"); }
         let (mode, first, second, outcome) = self.result()?;
         if mode != _mode { return Err("invalid_mode"); }
         ratings.apply(&self.ledger.match_id, mode, &first, &second, outcome)
@@ -176,7 +181,7 @@ mod tests {
         let vehicle = |team,x| Vehicle { tank:tank(), team, position:Vec3{x,y:0.,z:0.}, heading_radians:0., speed_metres_per_second:10., turn_radians_per_second:1., half_extent_metres:1., hit_points:1 };
         let mut world = World::new(BTreeMap::from([("seat".into(),vehicle(0,0.)),("other".into(),vehicle(1,100.))]),vec![]); world.state=MatchState::Running;
         let mut ledger=Ledger::new("match".into(),vec![Seat{agent_id:"agent".into(),seat_id:"seat".into()}]); ledger.state=MatchState::Running;
-        DurableMatch{ledger,world,world_events:vec![],clock:None,ready_agents:Default::default(),rating_published:false,queue_released:false,archived_world_events:0,finished:None}
+        DurableMatch{ledger,world,world_events:vec![],clock:None,ready_agents:Default::default(),rating_published:false,queue_released:false,archived_world_events:0,finished:None,ranked:true}
     }
     #[test] fn observation_contains_only_the_assigned_vehicle() {
         let game = fixture();

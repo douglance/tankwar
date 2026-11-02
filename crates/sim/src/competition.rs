@@ -55,10 +55,9 @@ impl Ratings {
         };
         let a = side_rating(first); let b = side_rating(second);
         let score = match outcome { Outcome::FirstWins => 1.0, Outcome::SecondWins => 0.0, Outcome::Draw => 0.5 };
-        let delta = 32.0 * (score - expected_score(a, b));
-        let changes: Vec<_> = first.iter().map(|agent| (agent, delta)).chain(second.iter().map(|agent| (agent, -delta))).map(|(agent, change)| {
+        let changes: Vec<_> = first.iter().map(|agent| (agent, b, score)).chain(second.iter().map(|agent| (agent, a, 1.0-score))).map(|(agent, opponent, own_score)| {
             let before = self.rating(mode, agent);
-            RatingChange { agent_id: agent.clone(), before, after: before + change }
+            RatingChange { agent_id: agent.clone(), before, after: before + 32.0 * (own_score - expected_score(before, opponent)) }
         }).collect();
         for change in &changes {
             let key = rating_key(mode, &change.agent_id);
@@ -120,6 +119,16 @@ mod tests {
         assert_eq!(entries.iter().map(|e| e.agent_id.as_str()).collect::<Vec<_>>(), vec!["z", "a"]);
         assert_eq!(entries[0].rating, 1516.0); assert_eq!(entries[0].games, 1); assert!(entries[0].provisional);
         assert!(ratings.leaderboard(Mode::TwoOnTwo).is_empty());
+    }
+    #[test] fn each_teammate_is_rated_against_the_opposing_mean() {
+        let mut ratings = Ratings::for_season("s1").unwrap();
+        let a=ids(&["a", "b"]); let opponents=ids(&["c", "d"]);
+        ratings.ratings.insert(rating_key(Mode::TwoOnTwo, "a"), 1700.0);
+        ratings.ratings.insert(rating_key(Mode::TwoOnTwo, "b"), 1300.0);
+        let result=ratings.apply("unequal", Mode::TwoOnTwo, &a, &opponents, Outcome::FirstWins).unwrap();
+        assert!((result[0].after - (1700.0 + 32.0 * (1.0 - 1.0 / (1.0 + 10_f64.powf(-0.5))))).abs() < 1e-9);
+        assert!((result[1].after - (1300.0 + 32.0 * (1.0 - 1.0 / (1.0 + 10_f64.powf(0.5))))).abs() < 1e-9);
+        assert_eq!(ratings.leaderboard(Mode::TwoOnTwo).len(), 4);
     }
     #[test] fn invalid_teams_do_not_change_ratings() {
         let mut r = Ratings::default();
