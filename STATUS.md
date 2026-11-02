@@ -1,0 +1,10 @@
+# Tankwar authority status
+
+The Rust authority and incurs CLI/MCP are prototypes on local `main`; the requested deployed system is incomplete.
+
+- `cargo test --workspace --target-dir /tmp/tankwar-workspace-tests -j 2`: passed on 2026-11-02 after the latest code change, including 16 server and 19 simulation tests with zero failures. `cargo check -p tankwar-server --target wasm32-unknown-unknown --target-dir /tmp/tankwar-wasm-check` passed.
+- Local Worker: an authenticated public command route reached the match actor, durably accepted commands and returned the original event on an identical retry; conflicting reuse was rejected. Local tests cover seasons, provisional ratings and a timeout draw applied once. A full-duration local timeout match is running as an additional integration check.
+- Viewer `dist/viewer/READY` exists. The viewer and its artifacts belong to Claude and were not edited by this agent.
+- Existing public placeholder at https://tankwar.doug-lance.workers.dev returns HTTP 503 for the command route. No new deployment was made: production identity issuer, JWKS, agent enrollment and revocation are not configured, so the requested working-command deployment gate is unmet. The previous account discovery found no configured Cloudflare Access identity providers or applications, and the organization read returned HTTP 403.
+- A production-quality login and agent provisioning flow, image observations, complete arena collision, historically sourced vehicle data, full controls, immutable seekable replays, and production runtime and recovery benchmarks remain open. Current vehicle numbers are approximations and the spectator feed is not a complete replay archive.
+- Before deployment, establish the real identity provider and verify a production-valid agent credential, exercise the command route in a suitably configured environment, then deploy only to account `88f9cbf5c4f4e217079bcbf0ca6cb181` with the ready viewer and verify the live route. Do not ship `assets/source-archives/reference/PanzerIV.zip`.
