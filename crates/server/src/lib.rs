@@ -45,6 +45,22 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
         return forward(&env, "MATCHES", match_id, "/spectate", serde_json::json!({})).await;
     }
+    if parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && parts[4] == "events" && req.method() == Method::Get {
+        let match_id = parts[3];
+        if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
+        let mut command_after = 0_u64;
+        let mut world_after = 0_u64;
+        let mut limit = 128_u64;
+        for (key, value) in req.url()?.query_pairs() {
+            match key.as_ref() {
+                "command_after" => match value.parse() { Ok(v) => command_after = v, Err(_) => return Response::error("invalid cursor", 400) },
+                "world_after" => match value.parse() { Ok(v) => world_after = v, Err(_) => return Response::error("invalid cursor", 400) },
+                "limit" => match value.parse() { Ok(v) => limit = v, Err(_) => return Response::error("invalid limit", 400) },
+                _ => return Response::error("invalid query", 400),
+            }
+        }
+        return forward(&env, "MATCHES", match_id, "/events", serde_json::json!({"command_after":command_after,"world_after":world_after,"limit":limit})).await;
+    }
     if parts.len() == 5 && parts[1] == "v1" && parts[2] == "matches" && parts[4] == "replay" && req.method() == Method::Get {
         let match_id = parts[3];
         if match_id.is_empty() || match_id.len() > 128 || !match_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') { return Response::error("invalid match id", 400); }
@@ -176,6 +192,18 @@ async fn read_history<T: serde::de::DeserializeOwned>(storage: &Storage, prefix:
     Ok(events)
 }
 
+async fn read_page<T: serde::de::DeserializeOwned>(storage: &Storage, keys: Vec<String>) -> Result<Vec<T>> {
+    if keys.is_empty() { return Ok(Vec::new()); }
+    let values = storage.get_multiple(keys.clone()).await?;
+    let mut result = Vec::with_capacity(keys.len());
+    for key in keys {
+        let key = worker::wasm_bindgen::JsValue::from_str(&key);
+        if !values.has(&key) { return Err(Error::RustError("event archive incomplete".into())); }
+        result.push(serde_wasm_bindgen::from_value(values.get(&key)).map_err(|e| Error::RustError(e.to_string()))?);
+    }
+    Ok(result)
+}
+
 impl MatchActor {
     fn start_loop(&self) {
         if self.loop_active.replace(true) { return; }
@@ -264,6 +292,31 @@ impl DurableObject for MatchActor {
                 "commands": commands,
                 "world_events": world_events,
             }));
+        }
+        if req.path() == "/events" {
+            #[derive(serde::Deserialize)] struct Page { command_after: u64, world_after: u64, limit: u64 }
+            let input: Page = req.json().await?;
+            let _guard = self.lock.lock().await;
+            let storage = self.state.storage();
+            let Some(game): Option<match_runtime::DurableMatch> = storage.get("match").await? else { return Response::error("match not found", 404); };
+            let command_total = game.ledger.version;
+            let Some(command_archived) = command_total.checked_sub(game.ledger.events.len() as u64) else { return Response::error("command archive incomplete", 500); };
+            let world_total = game.archived_world_events + game.world_events.len() as u64;
+            let Ok(command_keys) = archive::page_keys("command", input.command_after, command_total, input.limit) else { return Response::error("invalid cursor", 400); };
+            let Ok(world_keys) = archive::page_keys("world-event", input.world_after, world_total, input.limit) else { return Response::error("invalid cursor", 400); };
+            let command_end = input.command_after + command_keys.len() as u64;
+            let world_end = input.world_after + world_keys.len() as u64;
+            let stored_commands = archive::page_keys("command", input.command_after.min(command_archived), command_archived, command_end.saturating_sub(input.command_after).max(1)).map_err(|e| Error::RustError(e.into()))?;
+            let stored_commands: Vec<_> = stored_commands.into_iter().take(command_keys.len()).collect();
+            let mut commands: Vec<tankwar_protocol::Event> = read_page(&storage, stored_commands).await?;
+            commands.extend(game.ledger.events.iter().filter(|event| event.sequence > input.command_after && event.sequence <= command_end).cloned());
+            if commands.len() != command_keys.len() || commands.iter().enumerate().any(|(i, e)| e.sequence != input.command_after + i as u64 + 1) { return Response::error("command archive incomplete", 500); }
+            let stored_world = archive::page_keys("world-event", input.world_after.min(game.archived_world_events), game.archived_world_events, world_end.saturating_sub(input.world_after).max(1)).map_err(|e| Error::RustError(e.into()))?;
+            let mut world: Vec<match_runtime::RecordedWorldEvent> = read_page(&storage, stored_world.into_iter().take(world_keys.len()).collect()).await?;
+            world.extend(game.world_events.iter().enumerate().filter(|(i, _)| { let seq = game.archived_world_events + *i as u64 + 1; seq > input.world_after && seq <= world_end }).map(|(_, event)| event.clone()));
+            if world.len() != world_keys.len() { return Response::error("event archive incomplete", 500); }
+            let world_events: Vec<_> = world.into_iter().enumerate().map(|(i, event)| serde_json::json!({"sequence":input.world_after + i as u64 + 1,"tick":event.tick,"event":event.event})).collect();
+            return Response::from_json(&serde_json::json!({"commands":commands,"world_events":world_events,"next_command":command_end,"next_world":world_end,"command_count":command_total,"world_count":world_total}));
         }
         if req.path() == "/replay" {
             #[derive(serde::Deserialize)] struct ReplayRequest { tick: u64 }

@@ -38,6 +38,14 @@ pub fn complete_commands(events: &[Event], version: u64) -> bool {
     events.len() as u64 == version && events.iter().enumerate().all(|(index, event)| event.sequence == index as u64 + 1)
 }
 
+/// Ordered, exclusive sequence cursor, bounded by the Durable Object multi-get limit.
+pub fn page_keys(prefix: &str, after: u64, total: u64, limit: u64) -> Result<Vec<String>, &'static str> {
+    if after > total || !(1..=128).contains(&limit) { return Err("invalid_cursor"); }
+    let end = after.saturating_add(limit).min(total);
+    if end == after { return Ok(Vec::new()); }
+    Ok(((after + 1)..=end).map(|sequence| format!("{prefix}/{sequence:020}")).collect())
+}
+
 /// Durable Object multi-get permits at most 128 keys per request.
 pub fn key_batches(prefix: &str, count: u64) -> impl Iterator<Item = Vec<String>> + '_ {
     (1..=count).step_by(128).map(move |start| {
@@ -68,5 +76,23 @@ mod tests {
         assert_eq!(batches[0][0], "command/00000000000000000001");
         assert_eq!(batches[2][0], "command/00000000000000000257");
         assert_eq!(key_batches("command", 0).count(), 0);
+    }
+    #[test]
+    fn pages_are_bounded_exclusive_and_complete() {
+        let mut cursor = 0;
+        let mut collected = Vec::new();
+        loop {
+            let page = page_keys("event", cursor, 257, 100).unwrap();
+            if page.is_empty() { break; }
+            cursor += page.len() as u64;
+            collected.extend(page);
+        }
+        assert_eq!(collected.len(), 257);
+        assert_eq!(collected[0], "event/00000000000000000001");
+        assert_eq!(collected[256], "event/00000000000000000257");
+        assert!(page_keys("event", 258, 257, 1).is_err());
+        assert!(page_keys("event", 0, 257, 0).is_err());
+        assert!(page_keys("event", 0, 257, 129).is_err());
+        assert!(page_keys("event", u64::MAX, u64::MAX, 128).unwrap().is_empty());
     }
 }
