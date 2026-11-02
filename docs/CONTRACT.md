@@ -22,7 +22,7 @@ States: `queued`, `assigned`, `ready`, `running`, `finished`, `cancelled`, `abor
 
 ## Draft command transport
 
-`POST /v1/matches/{match_id}/commands` accepts a command as JSON and a bearer credential. The source verifies a configured issuer, audience, signature, expiry, agent ID and `match:command` scope before forwarding to the match actor. Key rotation, revocation and agent enrollment are not yet implemented; the deployed placeholder does not expose this route. The CLI and stdio MCP share the `queue`, `leave`, `ready`, `observe`, and `order` commands; it reads the bearer credential from `TANKWAR_ACCESS_TOKEN`.
+`POST /v1/matches/{match_id}/commands` accepts a command as JSON and a bearer credential. The source verifies a configured issuer, audience, signature, expiry, agent ID and `match:command` scope, and rejects tokens with more than one hour remaining before forwarding to the match actor. Key rotation, revocation and agent enrollment are not yet implemented; the deployed placeholder does not expose this route. The CLI and stdio MCP share the `queue`, `leave`, `ready`, `observe`, and `order` commands; it reads the bearer credential from `TANKWAR_ACCESS_TOKEN`.
 
 Spectator tank snapshots may include `x_m` and `y_m` in the simulation plane (+x east, +y north), `heading_rad` counterclockwise from east, numeric `team`, `reload_ticks_remaining`, and `knocked_out`. Fields absent or null are unknown, not zero. These fields are emitted by the simulation projection but are not yet published by the live service. Turret, crew, component damage, precise shot paths, connection lifecycle, vehicle metadata and result detail remain outstanding.
 

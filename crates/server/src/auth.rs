@@ -5,6 +5,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
+    exp: u64,
     agent_id: String,
     scope: String,
 }
@@ -12,6 +13,14 @@ struct Claims {
 /// Verify against a configured issuer and public key set. Configuration is never
 /// obtained from the untrusted token. Revocation still requires an external check.
 pub fn verify_agent(token: &str, issuer: &str, audience: &str, jwks: &str, required_scope: &str) -> Result<String, &'static str> {
+    #[cfg(target_arch = "wasm32")]
+    let now = (worker::Date::now().as_millis() / 1000) as u64;
+    #[cfg(not(target_arch = "wasm32"))]
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "invalid_clock")?.as_secs();
+    verify_agent_at(token, issuer, audience, jwks, required_scope, now)
+}
+
+fn verify_agent_at(token: &str, issuer: &str, audience: &str, jwks: &str, required_scope: &str, now: u64) -> Result<String, &'static str> {
     if issuer.is_empty() || audience.is_empty() || token.len() > 16_384 { return Err("invalid_auth_configuration"); }
     let header = decode_header(token).map_err(|_| "invalid_token")?;
     if header.alg != Algorithm::RS256 { return Err("invalid_token"); }
@@ -25,6 +34,8 @@ pub fn verify_agent(token: &str, issuer: &str, audience: &str, jwks: &str, requi
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
     validation.leeway = 0;
     let claims = decode::<Claims>(token, &key, &validation).map_err(|_| "invalid_token")?.claims;
+    // A credential with a distant expiry must not become a long-lived bearer key.
+    if claims.exp <= now || claims.exp.saturating_sub(now) > 3600 { return Err("invalid_token_lifetime"); }
     if claims.sub.is_empty() || claims.agent_id.is_empty() || claims.agent_id.len() > 128 || !claims.scope.split_ascii_whitespace().any(|s| s == required_scope) {
         return Err("insufficient_scope");
     }
@@ -41,12 +52,13 @@ mod tests {
     const WRONG_SCOPE: &str = r#"eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3QifQ.eyJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIiwic3ViIjoib3duZXIiLCJhZ2VudF9pZCI6ImFnZW50LTEiLCJhdWQiOiJ0YW5rd2FyIiwic2NvcGUiOiJwcm9maWxlOnJlYWQiLCJleHAiOjQxMDI0NDQ4MDB9.Qj9zr_8-JOARaD7KdZ_jnED-0J2iKSQyGqb7qdgMpuHr-XULEykqbtr9_JmaEu7uVAlol0N-7VDbafwbVUFnNVMtRPX4KU-rGXcBhRXH3LLao9Ljd6lIhUtHoqZQ_9b-9H8tosLYxzm1b9HFnNfzK5JYooNMe202vNjPhPZydAPt_INSKzTm4bBYc09SBqQEgvlai6maVTfwCOHh_WiLDYqS1Ey9No9h0zQKFR0yxDyoXEj7uRUGTcIiOVKS99rEYZsWY_9ra23y6hvwWJ9L3pPUuyDaUIcSsTYgB8KluTEp4dd4T7xeyupNBfS5WbInsmPcASLfv0NAzdVWTMok3Q"#;
     #[test]
     fn authenticates_only_signed_scoped_unexpired_tokens() {
-        let check = |token| verify_agent(token, "https://issuer.example", "tankwar", JWKS, "match:command");
+        let check = |token| verify_agent_at(token, "https://issuer.example", "tankwar", JWKS, "match:command", 4_102_444_300);
         assert_eq!(check(GOOD), Ok("agent-1".to_string()));
         assert!(check(BAD_AUDIENCE).is_err());
         assert!(check(EXPIRED).is_err());
         assert!(check(WRONG_SCOPE).is_err());
-        assert!(verify_agent(GOOD, "https://different.example", "tankwar", JWKS, "match:command").is_err());
+        assert!(verify_agent_at(GOOD, "https://different.example", "tankwar", JWKS, "match:command", 4_102_444_300).is_err());
+        assert_eq!(verify_agent_at(GOOD, "https://issuer.example", "tankwar", JWKS, "match:command", 4_102_440_000), Err("invalid_token_lifetime"));
         let mut forged = GOOD.to_string(); forged.replace_range(20..21, "X");
         assert!(check(&forged).is_err());
     }
