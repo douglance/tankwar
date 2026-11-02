@@ -18,7 +18,10 @@ if command -v wasm-opt >/dev/null; then
     -o "$stage/opt.wasm" "$stage/tankwar-viewer_bg.wasm"
   mv "$stage/opt.wasm" "$stage/tankwar-viewer_bg.wasm"
 fi
+hash=$(shasum -a 256 "$stage/tankwar-viewer_bg.wasm" | awk '{print $1}')
+perl -i -pe "s#new URL\\('tankwar-viewer_bg\\.wasm'#new URL('tankwar-viewer_bg.wasm?v=${hash}'#" "$stage/tankwar-viewer.js"
 cp "$stage/tankwar-viewer.js" "$stage/tankwar-viewer_bg.wasm" "$out/"
+printf '%s\n' "$hash" > "$out/wasm.version"
 cp crates/viewer/web/index.html "$out/index.html"
 rm -rf "$out/assets"
 mkdir -p "$out/assets"

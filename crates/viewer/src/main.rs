@@ -7,6 +7,10 @@ mod audio;
 mod camera;
 mod contract;
 mod feed;
+mod ladder;
+mod lesmont;
+mod remote;
+mod sight;
 mod tanks;
 mod ui;
 mod world;
@@ -44,6 +48,21 @@ pub struct Viewing {
     /// Selected tank seat.
     pub tank: usize,
     pub lag_s: Option<f32>,
+}
+
+/// Seconds of match time the live demo feed has reached since the viewer
+/// started. Shared by the directory badges and the live screen.
+#[derive(Resource)]
+pub struct LiveClock(pub f32);
+
+impl Default for LiveClock {
+    fn default() -> Self {
+        LiveClock(78.0)
+    }
+}
+
+fn tick_live_clock(time: Res<Time>, mut c: ResMut<LiveClock>) {
+    c.0 += time.delta_secs().min(0.1);
 }
 
 /// Live spectators trail the authoritative head by this many ticks.
@@ -126,7 +145,7 @@ fn playback_keys(
     if keys.just_pressed(KeyCode::Escape) {
         next.set(Screen::Directory);
     }
-    if keys.just_pressed(KeyCode::Tab) {
+    if keys.just_pressed(KeyCode::KeyT) {
         v.tank = (v.tank + 1) % m.seats.len();
     }
     if v.live {
@@ -171,9 +190,11 @@ fn main() {
         )
         .init_state::<Screen>()
         .enable_state_scoped_entities::<Screen>()
-        .insert_resource(Feeds(all_matches()))
+        .insert_resource(Feeds(initial_feeds()))
         .init_resource::<Viewing>()
-        .add_plugins((world::WorldPlugin, tanks::TanksPlugin, camera::CameraPlugin, ui::UiPlugin, audio::AudioFxPlugin))
+        .init_resource::<LiveClock>()
+        .add_systems(First, tick_live_clock)
+        .add_plugins((world::WorldPlugin, tanks::TanksPlugin, camera::CameraPlugin, remote::RemotePlugin, ui::UiPlugin, audio::AudioFxPlugin, ladder::LadderPlugin))
         .add_systems(
             Update,
             (playback_keys, advance_playback).chain().in_set(Playback).run_if(in_state(Screen::Battlefield)),
@@ -237,8 +258,8 @@ mod capture {
             3 => Act::Live { wall: 69.0, mode: Station(crate::camera::Station::Gunner), tank: 0, yaw: 0.0 },
             4 => Act::Live { wall: 70.0, mode: Station(crate::camera::Station::Driver), tank: 1, yaw: 0.0 },
             5 => Act::Live { wall: 71.0, mode: Station(crate::camera::Station::Commander), tank: 0, yaw: 0.0 },
-            6 => Act::Live { wall: 82.0, mode: Orbit, tank: 2, yaw: 3.4 },
-            7 => Act::Live { wall: 117.5, mode: Follow, tank: 1, yaw: 0.0 },
+            6 => Act::Live { wall: 75.0, mode: Orbit, tank: 2, yaw: 3.4 },
+            7 => Act::Live { wall: 86.0, mode: Follow, tank: 1, yaw: 0.0 },
             8 => Act::Live { wall: 43.0, mode: Orbit, tank: 0, yaw: 1.9 },
             9 => Act::Replay { idx: 1, at_s: 88.0, mode: Orbit, tank: 0 },
             10 => Act::Replay { idx: 2, at_s: 90.0, mode: Follow, tank: 1 },
@@ -306,6 +327,17 @@ mod capture {
             cap.step += 1;
             cap.frame = 0;
         }
+    }
+}
+
+fn initial_feeds() -> Vec<feed::Match> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Vec::new()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        all_matches()
     }
 }
 

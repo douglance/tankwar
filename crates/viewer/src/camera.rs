@@ -43,21 +43,25 @@ pub enum CamMode {
     Orbit,
     Follow,
     Station(Station),
+    /// The sight report the seat's agent is given, in place of a picture.
+    Agent,
 }
 
 impl CamMode {
-    pub const ALL: [CamMode; 5] = [
+    pub const ALL: [CamMode; 6] = [
         CamMode::Orbit,
         CamMode::Follow,
         CamMode::Station(Station::Gunner),
         CamMode::Station(Station::Commander),
         CamMode::Station(Station::Driver),
+        CamMode::Agent,
     ];
     pub fn label(self) -> &'static str {
         match self {
             CamMode::Orbit => "Orbit",
             CamMode::Follow => "Follow",
             CamMode::Station(s) => s.label(),
+            CamMode::Agent => "Agent's view",
         }
     }
 }
@@ -69,11 +73,13 @@ pub struct CamState {
     pub pitch: f32,
     pub dist: f32,
     pub focus: Vec3,
+    pub follow_pos: Vec3,
+    pub follow_look: Vec3,
 }
 
 impl Default for CamState {
     fn default() -> Self {
-        CamState { mode: CamMode::Orbit, yaw: 2.4, pitch: 0.5, dist: 130.0, focus: Vec3::ZERO }
+        CamState { mode: CamMode::Orbit, yaw: 2.4, pitch: 0.5, dist: 130.0, focus: Vec3::ZERO, follow_pos: Vec3::ZERO, follow_look: Vec3::ZERO }
     }
 }
 
@@ -84,9 +90,9 @@ fn spawn(mut commands: Commands) {
     commands.spawn((
         MainCam,
         Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection { fov: 50f32.to_radians(), near: 0.1, far: 2000.0, ..default() }),
+        Projection::Perspective(PerspectiveProjection { fov: 50f32.to_radians(), near: 0.1, far: 2600.0, ..default() }),
         Transform::from_xyz(-120.0, 70.0, 140.0).looking_at(Vec3::ZERO, Vec3::Y),
-        DistanceFog { color: world::SKY, falloff: FogFalloff::Linear { start: 260.0, end: 900.0 }, ..default() },
+        DistanceFog { color: world::SKY, falloff: FogFalloff::Linear { start: 320.0, end: 1150.0 }, ..default() },
         SpatialListener::new(0.3),
     ));
 }
@@ -95,8 +101,8 @@ fn spawn(mut commands: Commands) {
 fn directory_orbit(time: Res<Time>, mut cam: Query<(&mut Transform, &mut Projection), With<MainCam>>) {
     let Ok((mut t, mut p)) = cam.single_mut() else { return };
     let a = time.elapsed_secs() * 0.04 + 2.2;
-    let pos = Vec3::new(a.cos() * 150.0, 55.0, a.sin() * 150.0);
-    *t = Transform::from_translation(pos).looking_at(Vec3::new(0.0, 6.0, -10.0), Vec3::Y);
+    let pos = Vec3::new(a.cos() * 210.0, 70.0, -20.0 + a.sin() * 170.0);
+    *t = Transform::from_translation(pos).looking_at(Vec3::new(0.0, 4.0, -20.0), Vec3::Y);
     if let Projection::Perspective(pp) = p.as_mut() {
         pp.fov = 50f32.to_radians();
     }
@@ -110,7 +116,7 @@ fn cam_input(
     hovered: Res<UiHovered>,
     mut cs: ResMut<CamState>,
 ) {
-    for (k, m) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5].into_iter().zip(CamMode::ALL) {
+    for (k, m) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6].into_iter().zip(CamMode::ALL) {
         if keys.just_pressed(k) {
             cs.mode = m;
         }
@@ -158,12 +164,20 @@ fn place(
             pos.y = pos.y.max(world::height(pos.x, pos.z) + 3.0);
             *t = Transform::from_translation(pos).looking_at(cs.focus + Vec3::Y * 2.0, Vec3::Y);
         }
-        CamMode::Follow => {
+        // The agent's view hides the scene; keep the chase camera behind it.
+        CamMode::Follow | CamMode::Agent => {
             let fwd = hull.rotation * Vec3::Z;
             let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero();
-            let mut pos = hull.translation - flat * 18.0 + Vec3::Y * 7.0;
-            pos.y = pos.y.max(world::height(pos.x, pos.z) + 2.0);
-            *t = Transform::from_translation(pos).looking_at(hull.translation + flat * 10.0 + Vec3::Y * 2.0, Vec3::Y);
+            // Ease toward the chase point so turns and snapshot steps stay readable.
+            let mut want = hull.translation - flat * 18.0 + Vec3::Y * 7.0;
+            want.y = want.y.max(world::height(want.x, want.z) + 2.0);
+            let look = hull.translation + flat * 10.0 + Vec3::Y * 2.0;
+            let k = 1.0 - (-time.delta_secs() * 4.0).exp();
+            let near = cs.follow_pos.distance(want) < 60.0;
+            cs.follow_pos = if near { cs.follow_pos.lerp(want, k) } else { want };
+            cs.follow_look = if near { cs.follow_look.lerp(look, k) } else { look };
+            let pos = cs.follow_pos;
+            *t = Transform::from_translation(pos).looking_at(cs.follow_look, Vec3::Y);
         }
         CamMode::Station(st) => {
             let (eye, look, f) = match st {

@@ -9,6 +9,7 @@
 //! `demo_matches` builds clearly labelled demo feeds so the screens have
 //! something to show before the authoritative server publishes real ones.
 
+use crate::lesmont;
 use bevy::math::{Vec2, Vec3};
 
 pub const TICK_HZ: f32 = 20.0;
@@ -266,6 +267,8 @@ pub struct Match {
     pub end_tick: u32,
     pub demo: bool,
     pub stalls: Vec<Stall>,
+    /// Structure states as snapshots reported them: (tick, [(id, integrity, destroyed)]).
+    pub structures: Vec<(u32, Vec<(String, u32, bool)>)>,
     snaps: Vec<Vec<(u32, TankSnap)>>,
 }
 
@@ -273,17 +276,44 @@ impl Match {
     /// Build a match from an already ordered event list (used by adapters).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(id: String, mode: &'static str, map: &'static str, status: Status, seats: Vec<Seat>, events: Vec<Event>, end_tick: u32, demo: bool) -> Self {
-        Match { id, mode, map, status, seats, events, end_tick, demo, stalls: Vec::new(), snaps: Vec::new() }.index()
+        Match { id, mode, map, status, seats, events, end_tick, demo, stalls: Vec::new(), structures: Vec::new(), snaps: Vec::new() }.index()
     }
 
     pub(crate) fn index(mut self) -> Self {
+        self.reindex();
+        self
+    }
+
+    /// Rebuild snapshot tracks after events are appended.
+    pub(crate) fn reindex(&mut self) {
         self.snaps = vec![Vec::new(); self.seats.len()];
         for e in &self.events {
             if let EventKind::Snapshot { tank, snap } = &e.kind {
-                self.snaps[*tank].push((e.tick, *snap));
+                if *tank < self.snaps.len() {
+                    self.snaps[*tank].push((e.tick, *snap));
+                }
             }
         }
-        self
+    }
+
+    /// True when every seat has positions from tick 0 with no gap large enough
+    /// to freeze interpolation. The battlefield holds a tank still across a
+    /// gap of more than 20 ticks.
+    pub(crate) fn has_dense_track(&self) -> bool {
+        if self.end_tick == 0 {
+            return true;
+        }
+        if self.snaps.is_empty() {
+            return false;
+        }
+        self.snaps.iter().all(|list| {
+            let Some((first, _)) = list.first() else { return false };
+            if *first != 0 {
+                return false;
+            }
+            let Some((last, _)) = list.last() else { return false };
+            self.end_tick.saturating_sub(*last) <= 20 && list.windows(2).all(|w| w[1].0.saturating_sub(w[0].0) <= 20)
+        })
     }
 
     /// Authoritative tank state at a fractional tick, interpolated between
@@ -310,6 +340,12 @@ impl Match {
             s.reload = a.reload + (b.reload - a.reload) * f;
         }
         Some(s)
+    }
+
+    /// Latest structure states reported at or before `tick`, if any.
+    pub fn structures_at(&self, tick: f32) -> Option<&[(String, u32, bool)]> {
+        let i = self.structures.partition_point(|(t, _)| (*t as f32) <= tick);
+        if i == 0 { None } else { Some(&self.structures[i - 1].1) }
     }
 
     /// Number of events whose tick is at or before `tick`.
@@ -349,14 +385,19 @@ pub fn lerp_angle(a: f32, b: f32, f: f32) -> f32 {
 
 /// Make agent-supplied command text safe to show: control, bidirectional
 /// override and other invisible formatting characters become a visible
-/// placeholder, and the text is capped. The viewer renders the result as
-/// plain glyphs; it never interprets markup.
+/// placeholder, and the text is capped. Cut text ends with a notice saying
+/// how much of the original is shown. The viewer renders the result as plain
+/// glyphs; it never interprets markup. Running it again on its own output
+/// changes nothing, so the notice keeps the original length.
 pub fn sanitize_command_text(raw: &str) -> String {
+    if let Some(done) = already_cut(raw) {
+        return done.to_string();
+    }
     let mut out = String::new();
     let mut count = 0;
     for c in raw.chars() {
         if count == MAX_COMMAND_CHARS {
-            out.push_str("...");
+            out.push_str(&cut_notice(raw.chars().count()));
             break;
         }
         let bidi = matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
@@ -368,6 +409,32 @@ pub fn sanitize_command_text(raw: &str) -> String {
         count += 1;
     }
     out
+}
+
+/// The notice appended to command text that was cut.
+pub fn cut_notice(total: usize) -> String {
+    format!("... [cut: first {MAX_COMMAND_CHARS} of {total} characters shown]")
+}
+
+/// `raw` if it is already the output of a cut: a clean head of exactly the
+/// cap (placeholders count as one character) followed by a cut notice for a
+/// longer original. Anything else, a forged notice included, is cut again.
+fn already_cut(raw: &str) -> Option<&str> {
+    let (head, tail) = raw.rsplit_once("... [cut: first ")?;
+    let total: usize = tail.strip_prefix(&format!("{MAX_COMMAND_CHARS} of "))?.strip_suffix(" characters shown]")?.parse().ok()?;
+    let clean = !head.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}'));
+    let mut shown = head.chars().count();
+    let mut rest = head;
+    while let Some(i) = rest.find("<U+") {
+        let p = &rest[i..];
+        if p.len() >= 8 && p.as_bytes()[7] == b'>' && p[3..7].chars().all(|c| c.is_ascii_hexdigit()) {
+            shown -= 7;
+            rest = &p[8..];
+        } else {
+            rest = &p[3..];
+        }
+    }
+    (clean && shown == MAX_COMMAND_CHARS && total > MAX_COMMAND_CHARS).then_some(raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -472,14 +539,14 @@ fn run(spec: DemoSpec) -> Match {
         .iter()
         .enumerate()
         .map(|(i, seat)| {
-            let lane = (i / 2) as f32 * 26.0 - 13.0 + if seat.side == Side::West { 0.0 } else { 6.0 };
-            let (x, h) = match seat.side {
-                Side::West => (-270.0, std::f32::consts::FRAC_PI_2),
-                Side::East => (270.0, -std::f32::consts::FRAC_PI_2),
+            let k = (i / 2) as f32 * 12.0;
+            let (p, h) = match seat.side {
+                Side::West => (lesmont::spawn_west() - Vec2::new(0.0, k), std::f32::consts::FRAC_PI_2),
+                Side::East => (lesmont::spawn_east() + Vec2::new(0.0, k), -std::f32::consts::FRAC_PI_2),
             };
             SimTank {
                 vehicle: seat.vehicle,
-                s: spawn_snap(seat.vehicle, Vec2::new(x, lane), h),
+                s: spawn_snap(seat.vehicle, p, h),
                 drive: None,
                 traverse: None,
                 load: None,
@@ -500,6 +567,13 @@ fn run(spec: DemoSpec) -> Match {
     let mut shot_n = 0u32;
     let mut end_tick = max_tick;
     let mut finished = false;
+    // Demo structure state: homes and the church start at full integrity.
+    let mut structs: Vec<(String, u32, bool)> = lesmont::FOOTPRINTS
+        .iter()
+        .filter(|f| f.kind != lesmont::Kind::Wall)
+        .map(|f| (f.id.to_string(), f.max_integrity(), false))
+        .collect();
+    let mut structures: Vec<(u32, Vec<(String, u32, bool)>)> = vec![(0, structs.clone())];
 
     for tick in 0..=max_tick {
         let dt = 1.0 / TICK_HZ;
@@ -657,9 +731,37 @@ fn run(spec: DemoSpec) -> Match {
                         let hit = hash(spec.seed, shot_n) % 10 < 6 && !positions[target].1;
                         let miss = Vec2::new((hash(shot_n, 7) % 30) as f32 - 15.0, (hash(shot_n, 9) % 30) as f32 - 15.0);
                         let land = if hit { tp } else { tp + miss };
-                        let to = Vec3::new(land.x, 1.2, land.y);
+                        // The first standing structure on the line stops the shot.
+                        let mut block: Option<(f32, usize)> = None;
+                        for (fi, f) in lesmont::FOOTPRINTS.iter().enumerate() {
+                            let standing = f.kind == lesmont::Kind::Wall
+                                || structs.iter().any(|(id, _, d)| id == f.id && !d);
+                            if !standing {
+                                continue;
+                            }
+                            if let Some(t) = lesmont::segment_hits_rect(tk.s.pos, land, f.viewer_rect()) {
+                                if t > 0.0 && block.is_none_or(|(bt, _)| t < bt) {
+                                    block = Some((t, fi));
+                                }
+                            }
+                        }
+                        let land = block.map_or(land, |(t, _)| tk.s.pos.lerp(land, t));
+                        let to = Vec3::new(land.x, if block.is_some() { 2.5 } else { 1.2 }, land.y);
                         b.push(tick, EventKind::Shot { tank: i, round: r, from, to });
-                        if hit {
+                        if let Some((_, fi)) = block {
+                            let f = &lesmont::FOOTPRINTS[fi];
+                            let effect = match structs.iter_mut().find(|(id, _, _)| id == f.id) {
+                                Some(st) => {
+                                    st.1 = st.1.saturating_sub(1);
+                                    st.2 = st.1 == 0;
+                                    let msg = if st.2 { format!("{} struck; destroyed", f.id) } else { format!("{} struck; integrity {}", f.id, st.1) };
+                                    structures.push((tick + 4, structs.clone()));
+                                    msg
+                                }
+                                None => format!("{} struck; wall holds", f.id),
+                            };
+                            b.push(tick + 4, EventKind::Impact { target: None, at: to, effect });
+                        } else if hit {
                             hits.push((i, target, r));
                         } else {
                             b.push(tick + 4, EventKind::Impact { target: None, at: to, effect: "miss: ground strike".into() });
@@ -711,7 +813,7 @@ fn run(spec: DemoSpec) -> Match {
             b.push(tick + 4, EventKind::Impact { target: Some(target), at, effect });
         }
 
-        if tick % 5 == 0 {
+        {
             for (i, tk) in tanks.iter().enumerate() {
                 b.push(tick, EventKind::Snapshot { tank: i, snap: tk.s });
             }
@@ -751,6 +853,12 @@ fn run(spec: DemoSpec) -> Match {
         events.retain(|e| e.tick < f || e.tick >= t);
         let at = events.partition_point(|e| e.tick < f);
         events.insert(at, Event { seq: 0, tick: f, kind: EventKind::MissingInterval { from_tick: f, to_tick: t } });
+        // Structure changes inside the gap are first seen after it.
+        for st in structures.iter_mut() {
+            if st.0 >= f && st.0 < t {
+                st.0 = t;
+            }
+        }
     }
     events.sort_by_key(|e| (e.tick, e.seq));
 
@@ -764,6 +872,7 @@ fn run(spec: DemoSpec) -> Match {
         end_tick,
         demo: true,
         stalls: spec.stalls,
+        structures,
         snaps: Vec::new(),
     }
     .index()
@@ -777,21 +886,35 @@ fn s(at_s: f32, tank: usize, order: Order) -> Script {
     Script { at_s, tank, order, raw_text: None }
 }
 
-/// Engagement script: both sides advance along the approaches toward the
-/// village, then trade fire across the center.
+/// Lane routes for each seat: (order time, viewer waypoint). Tanks follow the
+/// main road and farm lanes into cover behind Lesmont's homes.
+pub const ROUTES: [&[(f32, (f32, f32))]; 4] = [
+    // West lead: along the main road, then behind home h3.
+    &[(2.0, (-150.0, -8.0)), (16.0, (-112.0, 2.0)), (28.0, (-102.0, 10.0))],
+    // East lead: in from the east approach to a firing spot beside h4.
+    &[(2.0, (148.0, -34.0)), (18.0, (112.0, -22.0)), (30.0, (95.0, -22.0))],
+    // West second: through the village centre, then up beside home h5.
+    &[(3.0, (-150.0, -14.0)), (18.0, (-60.0, -14.0)), (60.0, (-42.0, -34.0)), (100.0, (-44.0, -60.0)), (112.0, (-10.0, -62.0))],
+    // East second: across the east fields into cover behind home h6.
+    &[(3.0, (150.0, -30.0)), (18.0, (100.0, -34.0)), (62.0, (52.0, -40.0)), (76.0, (48.0, -24.0))],
+];
+
+/// Engagement script: both sides drive the lanes into cover, then trade
+/// fire. The west lead holds fire for three cycles while its cover is shelled.
 fn engagement(n: usize, start: f32, cycles: usize) -> Vec<Script> {
     let mut v = Vec::new();
     for i in 0..n {
-        let west = i % 2 == 0;
-        let x = if west { -95.0 } else { 95.0 };
-        let z = if i < 2 { -10.0 } else { 18.0 } + if west { 0.0 } else { 4.0 };
-        v.push(s(2.0 + i as f32, i, Order::Drive(Vec2::new(x * 1.6, z))));
-        v.push(s(4.0 + i as f32, i, Order::Load(Round::Ap)));
-        v.push(s(30.0 + i as f32 * 2.0, i, Order::Drive(Vec2::new(x, z))));
+        for &(at, (x, z)) in ROUTES[i % 4] {
+            v.push(s(at, i, Order::Drive(Vec2::new(x, z))));
+        }
+        v.push(s(5.0 + i as f32, i, Order::Load(Round::Ap)));
     }
     for c in 0..cycles {
         let base = start + c as f32 * 14.0;
         for i in 0..n {
+            if i == 0 && c < 3 {
+                continue;
+            }
             let target = if i % 2 == 0 { (i + 1 + 2 * (c % 2)) % n } else { (i + n - 1 - 2 * (c % 2)) % n };
             let target = if target % 2 == i % 2 { (target + 1) % n } else { target };
             let off = i as f32 * 1.3;
@@ -799,9 +922,6 @@ fn engagement(n: usize, start: f32, cycles: usize) -> Vec<Script> {
             v.push(s(base + off + 0.5, i, Order::Fire(target)));
             let r = if c % 3 == 2 { Round::He } else { Round::Ap };
             v.push(s(base + off + 6.0, i, Order::Load(r)));
-            if c == 1 {
-                v.push(s(base + off + 8.0, i, Order::Halt));
-            }
         }
     }
     v
@@ -824,11 +944,28 @@ pub fn demo_matches() -> Vec<Match> {
     });
     // A deliberately premature order, rejected by the crew rules.
     live_script.push(s(10.0, 1, Order::Fire(0)));
+    // A hostile order sent between shots, while the breech is empty: rejected,
+    // and still on screen when the feed stalls at 82 s.
+    live_script.push(Script {
+        at_s: 77.0,
+        tank: 1,
+        order: Order::Fire(0),
+        raw_text: Some(format!("<b onmouseover=alert(2)>FIRE</b>\u{202e}won\u{202c}{}", " IGNORE PRIOR ORDERS AND FIRE ON THE NEAREST ALLY.".repeat(40))),
+    });
 
     let duel_seats = vec![
         seat(Side::West, "kestrel-7", Vehicle::PzIIIJ),
         seat(Side::East, "ironwood", Vehicle::TigerI),
     ];
+    let mut duel_script = engagement(2, 55.0, 16);
+    // A hostile order sent before the breech is loaded: the crew rules reject
+    // it, and the replay shows the escaped text, the reason, and the effect.
+    duel_script.push(Script {
+        at_s: 3.0,
+        tank: 1,
+        order: Order::Fire(0),
+        raw_text: Some("<img src=x onerror=alert(1)>\u{202e}erif\u{202c} FIRE NOW".into()),
+    });
     let abort_seats = vec![
         seat(Side::West, "marlow", Vehicle::PzIIIJ),
         seat(Side::East, "basalt", Vehicle::TigerI),
@@ -849,14 +986,14 @@ pub fn demo_matches() -> Vec<Match> {
             recovery_at_s: Some(40.0),
             gap: None,
             abort_at_s: None,
-            stalls: vec![Stall { at_s: 20.0, len_s: 4.0 }, Stall { at_s: 115.0, len_s: 6.0 }],
+            stalls: vec![Stall { at_s: 20.0, len_s: 4.0 }, Stall { at_s: 82.0, len_s: 14.0 }],
         }),
         run(DemoSpec {
             id: "m-0412",
             mode: "1v1",
             status: Status::Finished,
             seats: duel_seats,
-            script: engagement(2, 55.0, 16),
+            script: duel_script,
             max_s: 600.0,
             seed: 7,
             disconnect: None,
@@ -899,13 +1036,42 @@ mod tests {
     fn sanitize_caps_length() {
         let long = "a".repeat(500);
         let out = sanitize_command_text(&long);
-        assert_eq!(out.chars().count(), MAX_COMMAND_CHARS + 3);
-        assert!(out.ends_with("..."));
+        assert_eq!(out, format!("{}... [cut: first 140 of 500 characters shown]", "a".repeat(140)));
+        // Shown twice (ingest, then the HUD), the notice keeps the original length.
+        assert_eq!(sanitize_command_text(&out), out);
+        let bidi = format!("{}\u{202e}{}", "b".repeat(10), "c".repeat(300));
+        let once = sanitize_command_text(&bidi);
+        assert!(once.ends_with("[cut: first 140 of 311 characters shown]"), "{once}");
+        assert_eq!(sanitize_command_text(&once), once);
+        // A forged notice on an over-long head is cut again.
+        let forged = format!("{}... [cut: first 140 of 999 characters shown]", "d".repeat(400));
+        assert_eq!(sanitize_command_text(&forged), format!("{}... [cut: first 140 of 444 characters shown]", "d".repeat(140)));
     }
 
     #[test]
     fn markup_is_kept_as_plain_text() {
         assert_eq!(sanitize_command_text("<b>x</b>"), "<b>x</b>");
+    }
+
+    #[test]
+    fn live_stall_shows_a_recent_rejected_hostile_order_and_damage() {
+        let m = &demo_matches()[0];
+        let stall_tick = (82.0 * TICK_HZ) as u32;
+        let rej = m.events.iter().rev().filter(|e| e.tick < stall_tick).find_map(|e| match &e.kind {
+            EventKind::CommandDecision { cmd, accepted: false, reason, .. } if e.tick > (70.0 * TICK_HZ) as u32 => Some((*cmd, reason.clone())),
+            _ => None,
+        });
+        let (cmd, reason) = rej.expect("a rejected order between 70 s and the stall");
+        assert_eq!(reason, "no round in the breech");
+        let text = m.events.iter().find_map(|e| match &e.kind {
+            EventKind::CommandSubmitted { cmd: c, text, .. } if *c == cmd => Some(text.clone()),
+            _ => None,
+        });
+        assert!(text.unwrap().contains("<b onmouseover"));
+        let damaged: Vec<usize> = (0..m.seats.len())
+            .filter(|i| m.tank_at(*i, 81.0 * TICK_HZ).is_some_and(|s| s.parts.iter().any(|p| *p != Part::Ok)))
+            .collect();
+        assert!(!damaged.is_empty());
     }
 
     #[test]
@@ -949,6 +1115,26 @@ mod tests {
                 // A round leaves the rack only when loading completes, so rounds fired,
                 // rounds racked and the round in the breech account for the whole loadout.
                 assert_eq!(start, aboard + shots(i), "match {} tank {i}", m.id);
+            }
+        }
+    }
+
+    #[test]
+    fn duel_destroys_a_home_and_tanks_never_drive_through_standing_ones() {
+        let all = demo_matches();
+        let duel = all.iter().find(|m| m.id == "m-0412").unwrap();
+        let last = duel.structures_at(duel.end_tick as f32).unwrap();
+        assert!(last.iter().any(|(id, n, d)| id.starts_with('h') && *d && *n == 0), "{last:?}");
+        for m in &all {
+            for tick in (0..=m.end_tick).step_by(5) {
+                let st = m.structures_at(tick as f32).unwrap_or(&[]);
+                for i in 0..m.seats.len() {
+                    let Some(t) = m.tank_at(i, tick as f32) else { continue };
+                    for f in &lesmont::FOOTPRINTS {
+                        let down = st.iter().any(|(id, _, d)| id == f.id && *d);
+                        assert!(down || lesmont::rect_distance(t.pos, f.viewer_rect()) > 2.0, "{} tank {i} at {:?} inside {} tick {tick}", m.id, t.pos, f.id);
+                    }
+                }
             }
         }
     }

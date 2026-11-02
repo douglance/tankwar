@@ -26,3 +26,8 @@ side's approach and shows defaults for the missing panels.
    (the viewer currently maps `ap`, `he`, `smoke`).
 9. **Result detail**: winner seat or draw reason in the finished event, so the
    viewer does not have to infer it from `match_drawn`.
+10. **Recorded sight reports**: the sight report each seat was actually given,
+    per tick it was issued (`{seat_id, tick, station, contacts}`), in the
+    replay recording. The viewer's Agent's view currently rebuilds these from
+    spectator snapshots with the published prototype sight rule; recorded
+    reports would let it show exactly what the agent received.

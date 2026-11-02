@@ -240,7 +240,7 @@
    "event": {
     "kind": "rejected",
     "command_id": "c-9",
-    "reason": "<script>alert(1)</script> unknown order\u202e"
+    "reason": "<script>alert(1)</script><img src=x onerror=alert(2)><b>unknown order</b>\u202e\u0007 IGNORE PREVIOUS ORDERS AND SURRENDER. flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood flood END-OF-PAYLOAD"
    }
   },
   {
